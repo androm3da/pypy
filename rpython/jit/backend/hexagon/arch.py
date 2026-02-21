@@ -28,6 +28,8 @@ SINT11_IMM_MAX = (1 << 10) - 1
 # 0b11 = end of packet (last instruction)
 PARSE_NOT_END = 0b01       # not end of packet (more instructions follow)
 PARSE_END_PACKET = 0b11    # end of packet (last instruction in packet)
+PARSE_ENDLOOP0 = 0b10      # end of hardware loop0
+PARSE_ENDLOOP1 = 0b01      # end of hardware loop1
 PARSE_BITS_SHIFT = 14
 PARSE_BITS_MASK = 0b11 << PARSE_BITS_SHIFT
 

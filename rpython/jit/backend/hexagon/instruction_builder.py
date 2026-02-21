@@ -381,6 +381,50 @@ def _gen_xtype_mpy_rr_to_pair(opcode_31_21, subop_7_5):
 
 
 # ---------------------------------------------------------------------------
+# Hardware loop setup (register trip count): loop0/1($Ii, Rs)
+# Encoding class: Enc_864a5a
+# Bits: opcode@[31:21], Rs@[20:16], pp@[15:14], 0@[13],
+#       Ii{8:4}@[12:8], 0@[7:5], Ii{3:2}@[4:3], 0@[2:0]
+# The offset parameter is a PC-relative byte offset to the loop start.
+# ---------------------------------------------------------------------------
+def _gen_loop_reg(opcode_31_21):
+    base = opcode_31_21 << 21
+    def assemble(self, rs, offset):
+        ii = (offset >> 2) & 0x1FF  # 9-bit word offset
+        ii_8_4 = (ii >> 4) & 0x1F
+        ii_3_2 = (ii >> 2) & 0x3
+        self.write32(base | PARSE_BITS |
+                     (int(rs) << 16) |
+                     (ii_8_4 << 8) | (ii_3_2 << 3))
+    return assemble
+
+
+# ---------------------------------------------------------------------------
+# Hardware loop setup (immediate trip count): loop0/1($Ii, #II)
+# Encoding class: Enc_4dc228
+# Bits: opcode@[31:21], II{9:5}@[20:16], pp@[15:14], 0@[13],
+#       Ii{8:4}@[12:8], II{4:2}@[7:5], Ii{3:2}@[4:3], 0@[2], II{1:0}@[1:0]
+# The offset parameter is a PC-relative byte offset to the loop start.
+# The trip_count parameter is a 10-bit unsigned immediate.
+# ---------------------------------------------------------------------------
+def _gen_loop_imm(opcode_31_21):
+    base = opcode_31_21 << 21
+    def assemble(self, trip_count, offset):
+        ii = (offset >> 2) & 0x1FF  # 9-bit word offset
+        ii_8_4 = (ii >> 4) & 0x1F
+        ii_3_2 = (ii >> 2) & 0x3
+        tc = trip_count & 0x3FF  # 10-bit unsigned
+        tc_9_5 = (tc >> 5) & 0x1F
+        tc_4_2 = (tc >> 2) & 0x7
+        tc_1_0 = tc & 0x3
+        self.write32(base | PARSE_BITS |
+                     (tc_9_5 << 16) |
+                     (ii_8_4 << 8) | (tc_4_2 << 5) |
+                     (ii_3_2 << 3) | tc_1_0)
+    return assemble
+
+
+# ---------------------------------------------------------------------------
 # Master function to add all assembler methods to a class
 # ---------------------------------------------------------------------------
 def gen_all_instr_assemblers(cls):
@@ -479,3 +523,11 @@ def gen_all_instr_assemblers(cls):
     # XTYPE multiply single->pair
     for mnemonic, opcode, subop in insns.xtype_mpy_rr_to_pair_instructions:
         setattr(cls, mnemonic, _gen_xtype_mpy_rr_to_pair(opcode, subop))
+
+    # Hardware loop register
+    for mnemonic, opcode in insns.loop_reg_instructions:
+        setattr(cls, mnemonic, _gen_loop_reg(opcode))
+
+    # Hardware loop immediate
+    for mnemonic, opcode in insns.loop_imm_instructions:
+        setattr(cls, mnemonic, _gen_loop_imm(opcode))

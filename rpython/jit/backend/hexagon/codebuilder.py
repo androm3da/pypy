@@ -7,7 +7,9 @@ OverwritingBuilder (for patching existing code).
 """
 
 from rpython.jit.backend.hexagon.arch import (
-    WORD, INST_SIZE, PARSE_END_PACKET, PARSE_BITS_SHIFT,
+    WORD, INST_SIZE,
+    PARSE_END_PACKET, PARSE_BITS_SHIFT, PARSE_BITS_MASK,
+    PARSE_ENDLOOP0, PARSE_ENDLOOP1,
     SINT16_IMM_MIN, SINT16_IMM_MAX,
     ABI_STACK_ALIGN,
 )
@@ -359,6 +361,42 @@ class InstrBuilder(AbstractHexagonBuilder):
         self._buf = []
         self._pos = 0
         self.ops_offset = {}
+
+    # -----------------------------------------------------------------------
+    # Hardware loop support
+    # -----------------------------------------------------------------------
+
+    def set_endloop0(self, pos=-1):
+        """Set parse bits to endloop0 (0b10) on the instruction at pos.
+
+        If pos=-1, patches the most recently emitted instruction.
+        endloop0 marks the last instruction of a hardware loop0 body.
+        """
+        if pos < 0:
+            idx = len(self._buf) - 1
+        else:
+            idx = pos // INST_SIZE
+        if 0 <= idx < len(self._buf):
+            word = self._buf[idx]
+            word &= ~PARSE_BITS_MASK
+            word |= (PARSE_ENDLOOP0 << PARSE_BITS_SHIFT)
+            self._buf[idx] = word
+
+    def set_endloop1(self, pos=-1):
+        """Set parse bits to endloop1 (0b01) on the instruction at pos.
+
+        If pos=-1, patches the most recently emitted instruction.
+        endloop1 marks the last instruction of a hardware loop1 body.
+        """
+        if pos < 0:
+            idx = len(self._buf) - 1
+        else:
+            idx = pos // INST_SIZE
+        if 0 <= idx < len(self._buf):
+            word = self._buf[idx]
+            word &= ~PARSE_BITS_MASK
+            word |= (PARSE_ENDLOOP1 << PARSE_BITS_SHIFT)
+            self._buf[idx] = word
 
     # -----------------------------------------------------------------------
     # Constant pool support

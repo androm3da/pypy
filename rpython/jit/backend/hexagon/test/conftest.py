@@ -18,6 +18,7 @@ THIS_DIR = os.path.dirname(__file__)
 # Test files that can run on any platform (no Hexagon hardware needed)
 CROSS_PLATFORM_TESTS = frozenset([
     'test_instr_builder.py',
+    'test_packet.py',
 ])
 
 

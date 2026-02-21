@@ -348,6 +348,40 @@ xtype_mpy_rr_to_pair_instructions = [
 ]
 
 # ---------------------------------------------------------------------------
+# Hardware loop setup (register trip count): loop0/1($Ii, Rs)
+# Encoding class: Enc_864a5a
+# Encoding: opcode@[31:21], Rs@[20:16], pp@[15:14], 0@[13],
+#           Ii{8:4}@[12:8], 0@[7:5], Ii{3:2}@[4:3], 0@[2:0]
+#
+# Ii is a PC-relative offset (in instruction words, i.e. byte_offset >> 2).
+# Only bits {8:4} and {3:2} of Ii are stored (7 bits), giving +/-256 byte range.
+# Params: (opcode_31_21,)
+# ---------------------------------------------------------------------------
+loop_reg_instructions = [
+    # loop0($Ii, Rs) -- set SA0, LC0
+    ('LOOP0R',   0b01100000000),
+    # loop1($Ii, Rs) -- set SA1, LC1
+    ('LOOP1R',   0b01100000001),
+]
+
+# ---------------------------------------------------------------------------
+# Hardware loop setup (immediate trip count): loop0/1($Ii, #II)
+# Encoding class: Enc_4dc228
+# Encoding: opcode@[31:21], II{9:5}@[20:16], pp@[15:14], 0@[13],
+#           Ii{8:4}@[12:8], II{4:2}@[7:5], Ii{3:2}@[4:3], 0@[2], II{1:0}@[1:0]
+#
+# Ii: PC-relative offset (same as loop_reg)
+# II: 10-bit unsigned trip count
+# Params: (opcode_31_21,)
+# ---------------------------------------------------------------------------
+loop_imm_instructions = [
+    # loop0($Ii, #II) -- set SA0, LC0 from immediate
+    ('LOOP0I',   0b01101001000),
+    # loop1($Ii, #II) -- set SA1, LC1 from immediate
+    ('LOOP1I',   0b01101001001),
+]
+
+# ---------------------------------------------------------------------------
 # NOP instruction
 # Encoding: 0x7F00C000 (with parse bits)
 # ---------------------------------------------------------------------------
@@ -398,6 +432,8 @@ def _main():
     check_table(xtype_cmp_pp_instructions, 'xtype_cmp_pp', 3)
     check_table(xtype_acc_ppp_instructions, 'xtype_acc_ppp', 3)
     check_table(xtype_mpy_rr_to_pair_instructions, 'xtype_mpy_rr_pair', 3)
+    check_table(loop_reg_instructions, 'loop_reg', 2)
+    check_table(loop_imm_instructions, 'loop_imm', 2)
 
     if not has_error:
         print 'defined', len(all_mnemonics), 'instructions successfully'
