@@ -20,6 +20,7 @@ MODEL_ARM64       = 'aarch64'
 MODEL_PPC_64      = 'ppc-64'
 MODEL_S390_64     = 's390x'
 MODEL_RISCV_64    = 'riscv64'
+MODEL_HEXAGON     = 'hexagon'
 # don't use '_' in the model strings; they are replaced by '-'
 
 
@@ -41,6 +42,8 @@ def detect_model_from_c_compiler():
             return k
     if getdefinedinteger('__riscv_xlen', '') == 64:
         return MODEL_RISCV_64
+    if getdefined('__hexagon__', ''):
+        return MODEL_HEXAGON
     raise ProcessorAutodetectError("Cannot detect processor using compiler macros")
 
 
@@ -82,6 +85,7 @@ def detect_model_from_host_platform():
             'arm': MODEL_ARM,      # freebsd
             's390x': MODEL_S390_64,
             'riscv64': MODEL_RISCV_64,
+            'hexagon': MODEL_HEXAGON,
             }.get(mach)
 
     if result is None:
@@ -137,6 +141,8 @@ def getcpuclassname(backend_name="auto"):
         return "rpython.jit.backend.zarch.runner", "CPU_S390_64"
     elif backend_name == MODEL_RISCV_64:
         return "rpython.jit.backend.riscv.runner", "CPU_RISCV_64"
+    elif backend_name == MODEL_HEXAGON:
+        return "rpython.jit.backend.hexagon.runner", "CPU_HEXAGON"
     else:
         raise ProcessorAutodetectError(
             "we have no JIT backend for this cpu: '%s'" % backend_name)
@@ -159,6 +165,7 @@ def getcpufeatures(backend_name="auto"):
         MODEL_PPC_64: ['floats'],
         MODEL_S390_64: ['floats'],
         MODEL_RISCV_64: ['floats'],
+        MODEL_HEXAGON: ['floats', 'singlefloats', 'longlong'],
     }[backend_name]
 
 if __name__ == '__main__':
