@@ -342,6 +342,18 @@ class InstrBuilder(AbstractHexagonBuilder):
         """Return the total size of generated code in bytes."""
         return self._pos
 
+    def materialize(self, cpu, allblocks):
+        """Allocate executable memory and copy code into it.
+
+        Returns the raw start address of the executable code.
+        """
+        size = self.get_relative_pos()
+        malloced = cpu.asmmemmgr.malloc(size, size)
+        allblocks.append(malloced)
+        rawstart = malloced[0]
+        self.copy_to_raw_memory(rawstart)
+        return rawstart
+
     def clear(self):
         """Reset the builder for reuse."""
         self._buf = []
