@@ -386,6 +386,179 @@ class TestHVXInstrBuilderSelfConsistency(object):
         cb.VFADD_SF(0, 1, 2)
         assert len(cb.buffer) == 1
 
+    def test_vadd_w_vd_field(self):
+        """VADD_W: Vd field should be at bits [4:0]."""
+        cb = TestCodeBuilder()
+        for vd in range(32):
+            cb.reset()
+            cb.VADD_W(vd, 0, 0)
+            w = cb.get_word()
+            assert (w & 0x1F) == vd, (
+                "Vd=%d but bits[4:0]=%d" % (vd, w & 0x1F))
+
+    def test_vadd_w_vu_field(self):
+        """VADD_W: Vu field should be at bits [12:8]."""
+        cb = TestCodeBuilder()
+        for vu in range(32):
+            cb.reset()
+            cb.VADD_W(0, vu, 0)
+            w = cb.get_word()
+            assert ((w >> 8) & 0x1F) == vu, (
+                "Vu=%d but bits[12:8]=%d" % (vu, (w >> 8) & 0x1F))
+
+    def test_vadd_w_vv_field(self):
+        """VADD_W: Vv field should be at bits [20:16]."""
+        cb = TestCodeBuilder()
+        for vv in range(32):
+            cb.reset()
+            cb.VADD_W(0, 0, vv)
+            w = cb.get_word()
+            assert ((w >> 16) & 0x1F) == vv, (
+                "Vv=%d but bits[20:16]=%d" % (vv, (w >> 16) & 0x1F))
+
+    def test_vsub_variants_differ(self):
+        """VSUB_W, VSUB_H, VSUB_B should produce different encodings."""
+        ops = {}
+        cb = TestCodeBuilder()
+        for name in ['VSUB_W', 'VSUB_H', 'VSUB_B']:
+            cb.reset()
+            getattr(cb, name)(0, 1, 2)
+            ops[name] = cb.get_word()
+        values = list(ops.values())
+        assert len(set(values)) == len(values)
+
+    def test_vmpy_h_produces_single_word(self):
+        cb = TestCodeBuilder()
+        cb.VMPY_H(0, 1, 2)
+        assert len(cb.buffer) == 1
+
+    def test_vmpye_w_produces_single_word(self):
+        cb = TestCodeBuilder()
+        cb.VMPYE_W(0, 1, 2)
+        assert len(cb.buffer) == 1
+
+    def test_vfloat_ops_differ(self):
+        """VFADD_SF, VFSUB_SF, VFMPY_SF should produce different encodings."""
+        ops = {}
+        cb = TestCodeBuilder()
+        for name in ['VFADD_SF', 'VFSUB_SF', 'VFMPY_SF']:
+            cb.reset()
+            getattr(cb, name)(0, 1, 2)
+            ops[name] = cb.get_word()
+        values = list(ops.values())
+        assert len(set(values)) == len(values)
+
+    def test_vcmp_eq_w_qd_field(self):
+        """VCMP_EQ_W: Qd field should be at bits [1:0]."""
+        cb = TestCodeBuilder()
+        for qd in range(4):
+            cb.reset()
+            cb.VCMP_EQ_W(qd, 0, 0)
+            w = cb.get_word()
+            assert (w & 0x3) == qd, (
+                "Qd=%d but bits[1:0]=%d" % (qd, w & 0x3))
+
+    def test_vcmp_eq_vs_gt_differ(self):
+        """VCMP_EQ_W and VCMP_GT_W should produce different encodings."""
+        cb = TestCodeBuilder()
+        cb.VCMP_EQ_W(0, 1, 2)
+        eq_w = cb.get_word()
+        cb.reset()
+        cb.VCMP_GT_W(0, 1, 2)
+        gt_w = cb.get_word()
+        assert eq_w != gt_w
+
+    def test_vpacke_h_produces_single_word(self):
+        cb = TestCodeBuilder()
+        cb.VPACKE_H(0, 1, 2)
+        assert len(cb.buffer) == 1
+
+    def test_vpacko_h_produces_single_word(self):
+        cb = TestCodeBuilder()
+        cb.VPACKO_H(0, 1, 2)
+        assert len(cb.buffer) == 1
+
+    def test_vpacke_vs_vpacko_differ(self):
+        """VPACKE_H and VPACKO_H should produce different encodings."""
+        cb = TestCodeBuilder()
+        cb.VPACKE_H(0, 1, 2)
+        e_w = cb.get_word()
+        cb.reset()
+        cb.VPACKO_H(0, 1, 2)
+        o_w = cb.get_word()
+        assert e_w != o_w
+
+    def test_vunpack_h_produces_single_word(self):
+        cb = TestCodeBuilder()
+        cb.VUNPACK_H(0, 1)
+        assert len(cb.buffer) == 1
+
+    def test_vunpack_h_vu_field(self):
+        """VUNPACK_H: Vu field should be at bits [12:8]."""
+        cb = TestCodeBuilder()
+        for vu in range(32):
+            cb.reset()
+            cb.VUNPACK_H(0, vu)
+            w = cb.get_word()
+            assert ((w >> 8) & 0x1F) == vu
+
+    def test_vmem_load_store_differ(self):
+        """VMEM_LOAD and VMEM_STORE should produce different encodings."""
+        cb = TestCodeBuilder()
+        cb.VMEM_LOAD(0, 5, 0)
+        ld_w = cb.get_word()
+        cb.reset()
+        cb.VMEM_STORE(5, 0, 0)
+        st_w = cb.get_word()
+        assert ld_w != st_w
+
+    def test_vmem_load_offset_encoding(self):
+        """VMEM_LOAD offset should be encoded in units of 128 bytes."""
+        cb = TestCodeBuilder()
+        # offset=0 should have zero offset bits
+        cb.VMEM_LOAD(0, 5, 0)
+        w0 = cb.get_word()
+        # offset=128 should have different encoding
+        cb.reset()
+        cb.VMEM_LOAD(0, 5, 128)
+        w1 = cb.get_word()
+        assert w0 != w1
+
+    def test_vsplat_rt_field(self):
+        """VSPLAT: Rt field should be at bits [20:16]."""
+        cb = TestCodeBuilder()
+        for rt in range(32):
+            cb.reset()
+            cb.VSPLAT(0, rt)
+            w = cb.get_word()
+            assert ((w >> 16) & 0x1F) == rt
+
+    def test_all_hvx_alu_ops_single_word(self):
+        """All HVX ALU operations should produce exactly one word."""
+        ops = ['VADD_W', 'VADD_H', 'VADD_B', 'VSUB_W', 'VSUB_H', 'VSUB_B',
+               'VAND', 'VOR', 'VXOR', 'VMPY_H', 'VMPYE_W',
+               'VFADD_SF', 'VFSUB_SF', 'VFMPY_SF', 'VPACKE_H', 'VPACKO_H']
+        cb = TestCodeBuilder()
+        for name in ops:
+            cb.reset()
+            getattr(cb, name)(0, 1, 2)
+            assert len(cb.buffer) == 1, (
+                "%s emitted %d words, expected 1" % (name, len(cb.buffer)))
+
+    def test_all_hvx_alu_parse_bits(self):
+        """All HVX ALU operations should have parse bits 0b11 at [15:14]."""
+        ops = ['VADD_W', 'VADD_H', 'VADD_B', 'VSUB_W', 'VSUB_H', 'VSUB_B',
+               'VAND', 'VOR', 'VXOR', 'VMPY_H', 'VMPYE_W',
+               'VFADD_SF', 'VFSUB_SF', 'VFMPY_SF', 'VPACKE_H', 'VPACKO_H']
+        cb = TestCodeBuilder()
+        for name in ops:
+            cb.reset()
+            getattr(cb, name)(0, 1, 2)
+            w = cb.get_word()
+            parse_bits = (w >> 14) & 0b11
+            assert parse_bits == 0b11, (
+                "%s: parse bits should be 0b11, got 0b%s" % (name, bin(parse_bits)))
+
 
 # ---------------------------------------------------------------------------
 # Reference assembler tests (need llvm-mc)
@@ -887,6 +1060,66 @@ class TestHVXInstrBuilderVsReference(object):
         self._check(cb.get_words(),
                      '{ vmem(R5 + #0) = V0 }')
 
+    def test_vadd_w_different_regs(self):
+        cb = TestCodeBuilder()
+        cb.VADD_W(5, 10, 15)
+        self._check(cb.get_words(),
+                     '{ V5.w = vadd(V10.w, V15.w) }')
+
+    def test_vsub_h(self):
+        cb = TestCodeBuilder()
+        cb.VSUB_H(3, 7, 11)
+        self._check(cb.get_words(),
+                     '{ V3.h = vsub(V7.h, V11.h) }')
+
+    def test_vsub_b(self):
+        cb = TestCodeBuilder()
+        cb.VSUB_B(3, 7, 11)
+        self._check(cb.get_words(),
+                     '{ V3.b = vsub(V7.b, V11.b) }')
+
+    def test_vmpy_h(self):
+        cb = TestCodeBuilder()
+        cb.VMPY_H(0, 1, 2)
+        self._check(cb.get_words(),
+                     '{ V0.h = vmpyi(V1.h, V2.h) }')
+
+    def test_vcmp_eq_w(self):
+        cb = TestCodeBuilder()
+        cb.VCMP_EQ_W(0, 1, 2)
+        self._check(cb.get_words(),
+                     '{ Q0 = vcmp.eq(V1.w, V2.w) }')
+
+    def test_vcmp_gt_w(self):
+        cb = TestCodeBuilder()
+        cb.VCMP_GT_W(1, 3, 5)
+        self._check(cb.get_words(),
+                     '{ Q1 = vcmp.gt(V3.w, V5.w) }')
+
+    def test_vpacke_h(self):
+        cb = TestCodeBuilder()
+        cb.VPACKE_H(0, 1, 2)
+        self._check(cb.get_words(),
+                     '{ V0.h = vpacke(V1.w, V2.w) }')
+
+    def test_vpacko_h(self):
+        cb = TestCodeBuilder()
+        cb.VPACKO_H(0, 1, 2)
+        self._check(cb.get_words(),
+                     '{ V0.h = vpacko(V1.w, V2.w) }')
+
+    def test_vmem_load_offset(self):
+        cb = TestCodeBuilder()
+        cb.VMEM_LOAD(3, 10, 128)
+        self._check(cb.get_words(),
+                     '{ V3 = vmem(R10 + #1) }')
+
+    def test_vmem_store_offset(self):
+        cb = TestCodeBuilder()
+        cb.VMEM_STORE(10, 3, 128)
+        self._check(cb.get_words(),
+                     '{ vmem(R10 + #1) = V3 }')
+
 
 # ---------------------------------------------------------------------------
 # Hypothesis-based property tests (with reference assembler)
@@ -968,4 +1201,51 @@ if HAS_HYPOTHESIS and HAS_TOOLS:
             cb.S2_ASL_I_R(rd, rs, imm)
             ref = assemble_to_words('{ %s = asl(%s, #%d) }' %
                                     (gpr_name(rd), gpr_name(rs), imm))
+            assert cb.get_words() == ref
+
+    class TestHVXInstrBuilderHypothesis(object):
+        """HVX property-based tests using hypothesis + reference assembler."""
+
+        @settings(max_examples=20)
+        @given(vd=vreg_strategy, vu=vreg_strategy, vv=vreg_strategy)
+        def test_vadd_w_random(self, vd, vu, vv):
+            cb = TestCodeBuilder()
+            cb.VADD_W(vd, vu, vv)
+            ref = assemble_to_words(
+                '{ %s.w = vadd(%s.w, %s.w) }' %
+                (vreg_name(vd), vreg_name(vu), vreg_name(vv)),
+                hvx=True)
+            assert cb.get_words() == ref
+
+        @settings(max_examples=20)
+        @given(vd=vreg_strategy, vu=vreg_strategy, vv=vreg_strategy)
+        def test_vsub_w_random(self, vd, vu, vv):
+            cb = TestCodeBuilder()
+            cb.VSUB_W(vd, vu, vv)
+            ref = assemble_to_words(
+                '{ %s.w = vsub(%s.w, %s.w) }' %
+                (vreg_name(vd), vreg_name(vu), vreg_name(vv)),
+                hvx=True)
+            assert cb.get_words() == ref
+
+        @settings(max_examples=20)
+        @given(vd=vreg_strategy, vu=vreg_strategy, vv=vreg_strategy)
+        def test_vand_random(self, vd, vu, vv):
+            cb = TestCodeBuilder()
+            cb.VAND(vd, vu, vv)
+            ref = assemble_to_words(
+                '{ %s = vand(%s, %s) }' %
+                (vreg_name(vd), vreg_name(vu), vreg_name(vv)),
+                hvx=True)
+            assert cb.get_words() == ref
+
+        @settings(max_examples=20)
+        @given(vd=vreg_strategy, rt=gpr_strategy)
+        def test_vsplat_random(self, vd, rt):
+            cb = TestCodeBuilder()
+            cb.VSPLAT(vd, rt)
+            ref = assemble_to_words(
+                '{ %s = vsplat(%s) }' %
+                (vreg_name(vd), gpr_name(rt)),
+                hvx=True)
             assert cb.get_words() == ref
