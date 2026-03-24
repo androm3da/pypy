@@ -8,7 +8,7 @@ from rpython.rlib.objectmodel import free_non_gc_object
 from rpython.rlib.debug import ll_assert, have_debug_prints
 from rpython.rlib.debug import debug_print, debug_start, debug_stop
 from rpython.rtyper.lltypesystem.lloperation import llop
-from rpython.rlib.rarithmetic import ovfcheck, LONG_BIT
+from rpython.rlib.rarithmetic import ovfcheck, LONG_BIT, maxint as MAXINT
 from rpython.memory.gc.base import MovingGCBase, ARRAY_TYPEID_MAP,\
      TYPEID_MAP
 
@@ -58,7 +58,7 @@ class SemiSpaceGC(MovingGCBase):
     # translating to a real backend.
     TRANSLATION_PARAMS = {'space_size': 8*1024*1024} # XXX adjust
 
-    def __init__(self, config, space_size=4096, max_space_size=sys.maxint//2+1,
+    def __init__(self, config, space_size=4096, max_space_size=MAXINT//2+1,
                  **kwds):
         self.param_space_size = space_size
         self.param_max_space_size = max_space_size
@@ -237,7 +237,7 @@ class SemiSpaceGC(MovingGCBase):
         # an already-allocated heap.
         if size < 1:
             size = 1     # actually, the minimum is 8MB in default translations
-        self.max_space_size = sys.maxint//2+1
+        self.max_space_size = MAXINT//2+1
         while self.max_space_size > size:
             self.max_space_size >>= 1
 

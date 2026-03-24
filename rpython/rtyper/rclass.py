@@ -343,7 +343,8 @@ class ClassRepr(Repr):
             vtable.subclassrange_max = self.classdef.maxid
         else:  # for the root class
             vtable.subclassrange_min = 0
-            vtable.subclassrange_max = sys.maxint
+            from rpython.rlib.rarithmetic import maxint
+            vtable.subclassrange_max = maxint
         rinstance = getinstancerepr(self.rtyper, self.classdef)
         rinstance.setup()
         if rinstance.gcflavor == 'gc':

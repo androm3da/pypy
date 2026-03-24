@@ -70,7 +70,7 @@ from rpython.memory.gc.base import GCBase, MovingGCBase
 from rpython.memory.gc import env
 from rpython.memory.support import mangle_hash
 from rpython.rlib.rarithmetic import ovfcheck, LONG_BIT, intmask, r_uint
-from rpython.rlib.rarithmetic import LONG_BIT_SHIFT
+from rpython.rlib.rarithmetic import LONG_BIT_SHIFT, maxint as MAXINT
 from rpython.rlib.debug import ll_assert, debug_print, debug_start, debug_stop
 from rpython.rlib.objectmodel import specialize, always_inline, we_are_translated
 from rpython.rlib import rgc, unroll
@@ -709,7 +709,7 @@ class IncrementalMiniMarkGC(MovingGCBase):
         elif raw_malloc_usage(itemsize):
             toobig = r_uint(maxsize // raw_malloc_usage(itemsize)) + 1
         else:
-            toobig = r_uint(sys.maxint) + 1
+            toobig = r_uint(MAXINT) + 1
 
         if r_uint(length) >= r_uint(toobig):
             #
@@ -1036,7 +1036,7 @@ class IncrementalMiniMarkGC(MovingGCBase):
                     extra_flags |= GCFLAG_CARDS_SET
             #
             # Detect very rare cases of overflows
-            if raw_malloc_usage(totalsize) > (sys.maxint - (WORD-1)
+            if raw_malloc_usage(totalsize) > (MAXINT - (WORD-1)
                                               - cardheadersize):
                 raise MemoryError("rare case of overflow")
             #
@@ -2760,7 +2760,7 @@ class IncrementalMiniMarkGC(MovingGCBase):
 
     def visit_all_objects(self):
         while self.objects_to_trace.non_empty():
-            self.visit_all_objects_step(sys.maxint)
+            self.visit_all_objects_step(MAXINT)
 
     TEST_VISIT_SINGLE_STEP = False    # for tests
 

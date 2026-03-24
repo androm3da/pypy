@@ -1,6 +1,6 @@
 import sys
 from rpython.rtyper.lltypesystem import lltype, llmemory, llarena, rffi
-from rpython.rlib.rarithmetic import LONG_BIT, r_uint
+from rpython.rlib.rarithmetic import LONG_BIT, r_uint, maxint as MAXINT
 from rpython.rlib.objectmodel import we_are_translated
 from rpython.rlib.debug import ll_assert, fatalerror
 
@@ -379,7 +379,7 @@ class ArenaCollection(object):
         """
         self.mass_free_prepare()
         #
-        res = self.mass_free_incremental(ok_to_free_func, sys.maxint)
+        res = self.mass_free_incremental(ok_to_free_func, MAXINT)
         ll_assert(res, "non-incremental mass_free_in_pages() returned False")
 
 

@@ -10,10 +10,11 @@ from rpython.rlib.objectmodel import we_are_translated, specialize, not_rpython
 from rpython.rtyper.extregistry import ExtRegistryEntry
 from rpython.translator.tool.cbuild import ExternalCompilationInfo
 from rpython.rlib import rgc
+from rpython.rlib.rarithmetic import maxint as MAXINT
 
 
-REFCNT_FROM_PYPY       = sys.maxint // 4 + 1
-REFCNT_FROM_PYPY_LIGHT = REFCNT_FROM_PYPY + (sys.maxint // 2 + 1)
+REFCNT_FROM_PYPY       = MAXINT // 4 + 1
+REFCNT_FROM_PYPY_LIGHT = REFCNT_FROM_PYPY + (MAXINT // 2 + 1)
 
 RAWREFCOUNT_DEALLOC_TRIGGER = lltype.Ptr(lltype.FuncType([], lltype.Void))
 

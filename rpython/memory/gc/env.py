@@ -2,7 +2,7 @@
 Utilities to get environ variables and platform-specific memory-related values.
 """
 import os, sys, platform
-from rpython.rlib.rarithmetic import r_uint
+from rpython.rlib.rarithmetic import r_uint, maxint as MAXINT
 from rpython.rlib.debug import debug_print, debug_start, debug_stop
 from rpython.rlib.rstring import assert_str0
 from rpython.rtyper.lltypesystem import lltype, rffi
@@ -56,15 +56,18 @@ def read_float_from_env(varname):
 # If unknown, it will just return the addressable size, which
 # will be huge on 64-bit systems.
 
-if sys.maxint == 2147483647:    # 32-bit
-    if sys.platform.startswith('linux'):
-        addressable_size = float(2**32)     # 4GB
-    elif sys.platform == 'win32':
-        addressable_size = float(2**31)     # 2GB
+def _get_addressable_size():
+    from rpython.rlib.rarithmetic import LONG_BIT
+    if LONG_BIT <= 32:
+        if sys.platform.startswith('linux'):
+            return float(2**32)     # 4GB
+        elif sys.platform == 'win32':
+            return float(2**31)     # 2GB
+        else:
+            return float(2**31 + 2**30)   # 3GB (compromise)
     else:
-        addressable_size = float(2**31 + 2**30)   # 3GB (compromise)
-else:
-    addressable_size = float(2**63)    # 64-bit
+        return float(2**63)    # 64-bit
+addressable_size = _get_addressable_size()
 
 
 def get_total_memory_linux(filename):
@@ -153,7 +156,7 @@ get_L2cache_linux3 = get_L2cache_linux2
 
 def get_L2cache_linux2_cpuinfo(filename="/proc/cpuinfo", label='cache size'):
     debug_start("gc-hardware")
-    L2cache = sys.maxint
+    L2cache = MAXINT
     try:
         fd = os.open(filename, os.O_RDONLY, 0644)
         try:
@@ -203,7 +206,7 @@ def get_L2cache_linux2_cpuinfo(filename="/proc/cpuinfo", label='cache size'):
     debug_print("L2cache =", L2cache)
     debug_stop("gc-hardware")
 
-    if L2cache < sys.maxint:
+    if L2cache < MAXINT:
         return L2cache
     else:
         # Print a top-level warning even in non-debug builds
@@ -213,7 +216,7 @@ def get_L2cache_linux2_cpuinfo(filename="/proc/cpuinfo", label='cache size'):
 
 def get_L2cache_linux2_cpuinfo_s390x(filename="/proc/cpuinfo", label='cache2'):
     debug_start("gc-hardware")
-    L2cache = sys.maxint
+    L2cache = MAXINT
     try:
         fd = os.open(filename, os.O_RDONLY, 0644)
         try:
@@ -254,7 +257,7 @@ def get_L2cache_linux2_cpuinfo_s390x(filename="/proc/cpuinfo", label='cache2'):
     debug_print("L2cache =", L2cache)
     debug_stop("gc-hardware")
 
-    if L2cache < sys.maxint:
+    if L2cache < MAXINT:
         return L2cache
     else:
         # Print a top-level warning even in non-debug builds
@@ -265,7 +268,7 @@ def get_L2cache_linux2_cpuinfo_s390x(filename="/proc/cpuinfo", label='cache2'):
 def get_L2cache_linux2_sparc():
     debug_start("gc-hardware")
     cpu = 0
-    L2cache = sys.maxint
+    L2cache = MAXINT
     while True:
         try:
             fd = os.open('/sys/devices/system/cpu/cpu' + assert_str0(str(cpu))
@@ -285,7 +288,7 @@ def get_L2cache_linux2_sparc():
 
     debug_print("L2cache =", L2cache)
     debug_stop("gc-hardware")
-    if L2cache < sys.maxint:
+    if L2cache < MAXINT:
         return L2cache
     else:
         # Print a top-level warning even in non-debug builds
@@ -297,8 +300,8 @@ def get_L2cache_linux2_sparc():
 def get_L2cache_linux2_system_cpu_index():
     debug_start("gc-hardware")
     cpu = 0
-    L2cache = sys.maxint
-    L3cache = sys.maxint
+    L2cache = MAXINT
+    L3cache = MAXINT
     while True:
         cpudir = '/sys/devices/system/cpu/cpu' + assert_str0(str(cpu))
         index = 0

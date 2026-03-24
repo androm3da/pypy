@@ -8,7 +8,7 @@ from rpython.rtyper.lltypesystem import lltype, llmemory, llarena
 from rpython.rlib.objectmodel import free_non_gc_object
 from rpython.rlib.debug import ll_assert
 from rpython.rlib.debug import debug_print, debug_start, debug_stop
-from rpython.rlib.rarithmetic import intmask, LONG_BIT
+from rpython.rlib.rarithmetic import intmask, LONG_BIT, maxint as MAXINT
 from rpython.rtyper.lltypesystem.lloperation import llop
 
 WORD = LONG_BIT // 8
@@ -53,7 +53,7 @@ class GenerationGC(SemiSpaceGC):
                  min_nursery_size=32*WORD,
                  auto_nursery_size=False,
                  space_size=1024*WORD,
-                 max_space_size=sys.maxint//2+1,
+                 max_space_size=MAXINT//2+1,
                  **kwds):
         SemiSpaceGC.__init__(self, config,
                              space_size = space_size,

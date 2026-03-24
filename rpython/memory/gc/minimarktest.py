@@ -2,7 +2,7 @@ import sys
 from rpython.rtyper.lltypesystem import llarena
 from rpython.rtyper.lltypesystem.llmemory import raw_malloc_usage
 from rpython.rlib.debug import ll_assert
-from rpython.rlib.rarithmetic import LONG_BIT
+from rpython.rlib.rarithmetic import LONG_BIT, maxint as MAXINT
 
 # For testing, a simple implementation of ArenaCollection.
 # This version could be used together with malloc, but
@@ -55,5 +55,5 @@ class SimpleArenaCollection(object):
 
     def mass_free(self, ok_to_free_func):
         self.mass_free_prepare()
-        res = self.mass_free_incremental(ok_to_free_func, sys.maxint)
+        res = self.mass_free_incremental(ok_to_free_func, MAXINT)
         assert res
