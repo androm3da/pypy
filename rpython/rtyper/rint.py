@@ -3,6 +3,7 @@ import sys
 from rpython.annotator import model as annmodel
 from rpython.flowspace.operation import op_appendices
 from rpython.rlib import objectmodel, jit
+from rpython.rlib import rarithmetic as _rarithmetic
 from rpython.rlib.rarithmetic import intmask, longlongmask, r_int, r_longlong
 from rpython.rlib.rarithmetic import r_uint, r_ulonglong, r_longlonglong, r_ulonglonglong
 from rpython.rtyper.error import TyperError
@@ -48,7 +49,7 @@ class IntegerRepr(FloatRepr):
     get_ll_le_function = get_ll_ge_function
 
     def get_ll_hash_function(self):
-        if (sys.maxint == 2147483647 and
+        if (_rarithmetic.LONG_BIT <= 32 and
             self.lowleveltype in (SignedLongLong, UnsignedLongLong)):
             return ll_hash_long_long
         return ll_hash_int
@@ -174,11 +175,44 @@ class IntegerRepr(FloatRepr):
 
 
 _integer_reprs = {}
+def _infer_opprefix(numtype):
+    """Infer operation prefix for Number types not explicitly registered.
+
+    Needed for cross-compilation: when the target's 'long' is 32-bit,
+    rffi.LONG resolves to Number('INT', r_INT_32) which has no opprefix.
+    We check the target's rffi.LONG size and assign 'int_'/'uint_' prefix
+    to types matching the target word size.
+    """
+    if not isinstance(numtype, Number):
+        return None
+    tp = numtype._type
+    if not hasattr(tp, 'BITS'):
+        return None
+    try:
+        from rpython.rtyper.lltypesystem import rffi as _rffi
+    except ImportError:
+        return None
+    # Check if type matches target's 'long' (word-sized integer)
+    long_tp = getattr(_rffi, 'LONG', None)
+    if long_tp is not None and isinstance(long_tp, Number):
+        long_bits = getattr(long_tp._type, 'BITS', None)
+        if long_bits is not None and tp.BITS == long_bits:
+            return 'int_' if tp.SIGNED else 'uint_'
+    # Check if type matches target's 'long long'
+    llong_tp = getattr(_rffi, 'LONGLONG', None)
+    if llong_tp is not None and isinstance(llong_tp, Number):
+        llong_bits = getattr(llong_tp._type, 'BITS', None)
+        if llong_bits is not None and tp.BITS == llong_bits:
+            return 'llong_' if tp.SIGNED else 'ullong_'
+    return None
+
 def getintegerrepr(lltype, prefix=None):
     try:
         return _integer_reprs[lltype]
     except KeyError:
         pass
+    if prefix is None:
+        prefix = _infer_opprefix(lltype)
     repr = _integer_reprs[lltype] = IntegerRepr(lltype, prefix)
     return repr
 
@@ -387,7 +421,12 @@ def _rtype_call_helper(hop, func, implicit_excs=[]):
     return v_result
 
 
-INT_BITS_1 = r_int.BITS - 1
+def _int_bits_1():
+    """Return LONG_BIT - 1 (the sign bit position for Signed).
+    Uses LONG_BIT so that cross-compilation to a different word size
+    produces the correct shift count."""
+    return _rarithmetic.LONG_BIT - 1
+INT_BITS_1 = _int_bits_1()   # for backwards compat; prefer _int_bits_1()
 LLONG_BITS_1 = r_longlong.BITS - 1
 LLLONG_BITS_1 = r_longlonglong.BITS - 1
 INT_MIN = int(-(1 << INT_BITS_1))
@@ -405,7 +444,7 @@ def ll_int_py_div(x, y):
     p = r * y
     if y < 0: u = p - x
     else:     u = x - p
-    return r + (u >> INT_BITS_1)
+    return r + (u >> _int_bits_1())
 
 @jit.oopspec("int.py_div(x, y)")
 def ll_int_py_div_nonnegargs(x, y):
@@ -422,7 +461,7 @@ def ll_int_py_div_zer(x, y):
 def ll_int_py_div_ovf(x, y):
     # JIT: intentionally not short-circuited to produce only one guard
     # and to remove the check fully if one of the arguments is known
-    if (x == -sys.maxint - 1) & (y == -1):
+    if (x == -_rarithmetic.maxint - 1) & (y == -1):
         raise OverflowError("integer division")
     return ll_int_py_div(x, y)
 
@@ -497,7 +536,7 @@ def ll_int_py_mod(x, y):
     r = llop.int_mod(Signed, x, y)                 # <= truncates like in C
     if y < 0: u = -r
     else:     u = r
-    return r + (y & (u >> INT_BITS_1))
+    return r + (y & (u >> _int_bits_1()))
 
 @jit.oopspec("int.py_mod(x, y)")
 def ll_int_py_mod_nonnegargs(x, y):
@@ -513,7 +552,7 @@ def ll_int_py_mod_zer(x, y):
 
 def ll_int_py_mod_ovf(x, y):
     # see comment in ll_int_py_div_ovf
-    if (x == -sys.maxint - 1) & (y == -1):
+    if (x == -_rarithmetic.maxint - 1) & (y == -1):
         raise OverflowError
     return ll_int_py_mod(x, y)
 
@@ -590,12 +629,12 @@ def ll_int_lshift_ovf(x, y):
 
 @jit.oopspec("int.neg_ovf(x)")
 def ll_int_neg_ovf(x):
-    if x == INT_MIN:
+    if x == -_rarithmetic.maxint - 1:
         raise OverflowError
     return -x
 
 def ll_int_abs_ovf(x):
-    if x == INT_MIN:
+    if x == -_rarithmetic.maxint - 1:
         raise OverflowError
     return abs(x)
 
