@@ -99,35 +99,50 @@
 /* shifting */
 
 /* NB. shifting has same limitations as C: the shift count must be
-       >= 0 and < LONG_BITS. */
+       >= 0 and < LONG_BITS.
+   Cross-compilation note: when translating on a 64-bit host for a 32-bit
+   target, the RPython compiler may emit int_rshift(x, 32) for Signed
+   values (e.g. in hash functions).  This is valid on the 64-bit host
+   but undefined behavior on the 32-bit target.  The macros below clamp
+   the shift count to avoid UB while producing mathematically correct
+   results:
+   - Signed arithmetic right shift by >= bits: clamp to bits-1, which
+     yields 0 for non-negative values and -1 for negative values.
+   - Unsigned right shift by >= bits: result is 0.
+   - Left shift by >= bits: result is 0. */
 #define CHECK_SHIFT_RANGE(y, bits) RPyAssert(y >= 0 && y < bits, \
 	       "The shift count is outside of the supported range")
 
 
 #define OP_INT_RSHIFT(x,y,r)    CHECK_SHIFT_RANGE(y, PYPY_LONG_BIT); \
-						r = Py_ARITHMETIC_RIGHT_SHIFT(Signed, x, (y))
+    r = ((y) >= PYPY_LONG_BIT \
+         ? Py_ARITHMETIC_RIGHT_SHIFT(Signed, x, PYPY_LONG_BIT - 1) \
+         : Py_ARITHMETIC_RIGHT_SHIFT(Signed, x, (y)))
 #define OP_UINT_RSHIFT(x,y,r)   CHECK_SHIFT_RANGE(y, PYPY_LONG_BIT); \
-						r = (x) >> (y)
+    r = ((y) >= PYPY_LONG_BIT ? (Unsigned)0 : (x) >> (y))
 #define OP_LLONG_RSHIFT(x,y,r)  CHECK_SHIFT_RANGE(y, PYPY_LONGLONG_BIT); \
-						r = Py_ARITHMETIC_RIGHT_SHIFT(PY_LONG_LONG,x, (y))
+    r = ((y) >= PYPY_LONGLONG_BIT \
+         ? Py_ARITHMETIC_RIGHT_SHIFT(PY_LONG_LONG, x, PYPY_LONGLONG_BIT - 1) \
+         : Py_ARITHMETIC_RIGHT_SHIFT(PY_LONG_LONG, x, (y)))
 #define OP_ULLONG_RSHIFT(x,y,r) CHECK_SHIFT_RANGE(y, PYPY_LONGLONG_BIT); \
-						r = (x) >> (y)
+    r = ((y) >= PYPY_LONGLONG_BIT ? (unsigned long long)0 : (x) >> (y))
 #define OP_LLLONG_RSHIFT(x,y,r) CHECK_SHIFT_RANGE(y, 128); r = (x) >> (y)
 #define OP_ULLLONG_RSHIFT(x,y,r) CHECK_SHIFT_RANGE(y, 128); r = (x) >> (y)
 
 /* left-shift of a signed value: C99 makes the result undefined if the
-   value is negative.  Force the left-shift to occur on unsigned instead. */
+   value is negative.  Force the left-shift to occur on unsigned instead.
+   For cross-compilation safety, shift by >= bits yields 0. */
 #define OP_INT_LSHIFT(x,y,r)    CHECK_SHIFT_RANGE(y, PYPY_LONG_BIT); \
-                                    r = (Signed)(((Unsigned)(x)) << (y))
+    r = ((y) >= PYPY_LONG_BIT ? (Signed)0 : (Signed)(((Unsigned)(x)) << (y)))
 #define OP_LLONG_LSHIFT(x,y,r)  CHECK_SHIFT_RANGE(y, PYPY_LONGLONG_BIT); \
-                       r = (long long)(((unsigned long long)(x)) << (y))
+    r = ((y) >= PYPY_LONGLONG_BIT ? 0LL : (long long)(((unsigned long long)(x)) << (y)))
 #define OP_LLLONG_LSHIFT(x,y,r) CHECK_SHIFT_RANGE(y, 128); \
                          r = (__int128_t)(((__uint128_t)(x)) << (y))
 
-#define OP_UINT_LSHIFT(x,y,r)   CHECK_SHIFT_RANGE(y, PYPY_LONG_BIT);    \
-							r = (x) << (y)
+#define OP_UINT_LSHIFT(x,y,r)   CHECK_SHIFT_RANGE(y, PYPY_LONG_BIT); \
+    r = ((y) >= PYPY_LONG_BIT ? (Unsigned)0 : (x) << (y))
 #define OP_ULLONG_LSHIFT(x,y,r) CHECK_SHIFT_RANGE(y, PYPY_LONGLONG_BIT); \
-							r = (x) << (y)
+    r = ((y) >= PYPY_LONGLONG_BIT ? 0ULL : (x) << (y))
 #define OP_ULLLONG_LSHIFT(x,y,r) CHECK_SHIFT_RANGE(y, 128); \
                                                         r = (x) << (y)
 
@@ -190,7 +205,7 @@
 
 RPY_EXTERN long long op_llong_mul_ovf(long long a, long long b);
 
-/* The definitions above can be used with various types */ 
+/* The definitions above can be used with various types */
 
 #define OP_UINT_IS_TRUE OP_INT_IS_TRUE
 #define OP_UINT_INVERT OP_INT_INVERT
