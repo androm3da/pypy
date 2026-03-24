@@ -921,7 +921,7 @@ def _uint_mul_high(a, b):
 # String parsing support
 # ---------------------------
 
-OVF_DIGITS = len(str(sys.maxint))
+OVF_DIGITS = len(str(maxint))
 
 def string_to_int(s, base=10, allow_underscores=False, no_implicit_octal=False,
                   max_str_digits=0):
