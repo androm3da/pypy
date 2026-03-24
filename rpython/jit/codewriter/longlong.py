@@ -12,7 +12,17 @@ from rpython.rlib import rarithmetic, longlong2float
 from rpython.rlib.objectmodel import compute_hash
 
 
-if sys.maxint > 2147483647:
+def _is_target_64_bit():
+    try:
+        from rpython.translator.platform import platform as current_platform
+        target_long_bit = getattr(current_platform, 'target_long_bit', None)
+        if target_long_bit is not None:
+            return target_long_bit > 32
+    except ImportError:
+        pass
+    return sys.maxint > 2147483647
+
+if _is_target_64_bit():
     # ---------- 64-bit platform ----------
     # the type FloatStorage is just a float
 
