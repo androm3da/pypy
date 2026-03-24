@@ -660,12 +660,21 @@ def uniquefilepath(LAST=[0]):
     LAST[0] += 1
     return udir.join('platcheck_%d.c' % i)
 
-integer_class = [rffi.SIGNEDCHAR, rffi.UCHAR, rffi.CHAR,
-                 rffi.SHORT, rffi.USHORT,
-                 rffi.INT, rffi.UINT,
-                 rffi.INT_real, rffi.UINT_real,
-                 rffi.LONG, rffi.ULONG,
-                 rffi.LONGLONG, rffi.ULONGLONG]
+_integer_class_list = [rffi.SIGNEDCHAR, rffi.UCHAR, rffi.CHAR,
+                       rffi.SHORT, rffi.USHORT,
+                       rffi.INT, rffi.UINT,
+                       rffi.INT_real, rffi.UINT_real,
+                       rffi.LONG, rffi.ULONG,
+                       rffi.LONGLONG, rffi.ULONGLONG,
+                       lltype.Signed, lltype.Unsigned]
+# Deduplicate while preserving order (some types alias on certain platforms)
+_seen = set()
+integer_class = []
+for _tp in _integer_class_list:
+    _id = id(_tp)
+    if _id not in _seen:
+        _seen.add(_id)
+        integer_class.append(_tp)
 # XXX SIZE_T?
 
 float_class = [rffi.DOUBLE]

@@ -491,7 +491,8 @@ DICTINDEX_INT = lltype.Ptr(lltype.GcArray(rffi.UINT))
 DICTINDEX_SHORT = lltype.Ptr(lltype.GcArray(rffi.USHORT))
 DICTINDEX_BYTE = lltype.Ptr(lltype.GcArray(rffi.UCHAR))
 
-IS_64BIT = sys.maxint != 2 ** 31 - 1
+from rpython.rlib.rarithmetic import LONG_BIT as _LONG_BIT
+IS_64BIT = _LONG_BIT > 32
 
 if IS_64BIT:
     FUNC_SHIFT = 3

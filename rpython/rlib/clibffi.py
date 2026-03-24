@@ -226,6 +226,16 @@ __int_type_map = [
     (lltype.Char, _signed_type_for(lltype.Char)),
     ]
 
+# Cross-compilation: rffi.LONG may not be lltype.Signed (e.g. on 32-bit
+# Hexagon, rffi.LONG becomes Number('INT', r_INT_32)).  Ensure Signed and
+# Unsigned are always in the type map.
+if rffi.LONG is not lltype.Signed:
+    __int_type_map.append(
+        (lltype.Signed, _signed_type_for(lltype.Signed)))
+if rffi.ULONG is not lltype.Unsigned:
+    __int_type_map.append(
+        (lltype.Unsigned, _unsigned_type_for(lltype.Unsigned)))
+
 __float_type_map = [
     (rffi.DOUBLE, ffi_type_double),
     (rffi.FLOAT, ffi_type_float),
