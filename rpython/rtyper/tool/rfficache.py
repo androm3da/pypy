@@ -79,6 +79,16 @@ class Platform:
     def _make_type(self, name, signed, size):
         inttype = rarithmetic.build_int('r_' + name, signed, size*8)
         tp = lltype.build_number(name, inttype)
+        # For cross-compilation: if this type aliased Signed/Unsigned but
+        # has a different size than the target's 'long', create a distinct
+        # Number type.  This handles the case where LONGLONG (8 bytes on
+        # a 32-bit target) would alias Signed because r_longlong == r_int
+        # on the 64-bit host.
+        if tp is lltype.Signed or tp is lltype.Unsigned:
+            from rpython.translator.platform import platform as _platform
+            target_long_bit = getattr(_platform, 'target_long_bit', None)
+            if target_long_bit is not None and size * 8 != target_long_bit:
+                tp = lltype.Number(name, inttype)
         self.numbertype_to_rclass[tp] = inttype
         self.types[name] = tp
         return tp
