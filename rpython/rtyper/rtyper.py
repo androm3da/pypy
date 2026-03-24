@@ -26,6 +26,27 @@ from rpython.rtyper.lltypesystem.lltype import (Signed, Void, LowLevelType,
     ContainerType, typeOf, Primitive, getfunctionptr)
 from rpython.rtyper.rmodel import Repr, inputconst
 from rpython.rtyper import rclass
+
+
+def _number_types_compatible(t1, t2):
+    """Check if two Number types are compatible for cross-compilation.
+
+    On 64-bit hosts cross-compiling to 32-bit, types like TIME_T and Signed
+    may be distinct Number objects but share the same integer width/signedness.
+    """
+    tp1, tp2 = t1._type, t2._type
+    bits1 = getattr(tp1, 'BITS', None)
+    bits2 = getattr(tp2, 'BITS', None)
+    # Python builtin 'int' doesn't have BITS; use r_int.BITS
+    if bits1 is None:
+        from rpython.rlib.rarithmetic import r_int
+        bits1 = r_int.BITS
+    if bits2 is None:
+        from rpython.rlib.rarithmetic import r_int
+        bits2 = r_int.BITS
+    signed1 = getattr(tp1, 'SIGNED', True)
+    signed2 = getattr(tp2, 'SIGNED', True)
+    return bits1 == bits2 and signed1 == signed2
 from rpython.rtyper.rclass import RootClassRepr
 from rpython.tool.pairtype import pair
 from rpython.translator.unsimplify import insert_empty_block
@@ -460,12 +481,20 @@ class RPythonTyper(object):
             resulttype = resultvar.concretetype
             op.result.concretetype = hop.r_result.lowleveltype
             if op.result.concretetype != resulttype:
-                raise TyperError("inconsistent type for the result of '%s':\n"
-                                 "annotator says %s,\n"
-                                 "whose repr is %r\n"
-                                 "but rtype_%s returned %r" % (
-                    op.opname, hop.s_result,
-                    hop.r_result, op.opname, resulttype))
+                # For cross-compilation: distinct Number types that share
+                # the same underlying integer width (e.g. TIME_T vs Signed
+                # when both are 64-bit on the host) are compatible in C.
+                from rpython.rtyper.lltypesystem.lltype import Number as _Number
+                expected = op.result.concretetype
+                if not (isinstance(expected, _Number) and
+                        isinstance(resulttype, _Number) and
+                        _number_types_compatible(expected, resulttype)):
+                    raise TyperError("inconsistent type for the result of '%s':\n"
+                                     "annotator says %s,\n"
+                                     "whose repr is %r\n"
+                                     "but rtype_%s returned %r" % (
+                        op.opname, hop.s_result,
+                        hop.r_result, op.opname, resulttype))
             # figure out if the resultvar is a completely fresh Variable or not
             if (isinstance(resultvar, Variable) and
                 resultvar.annotation is None and

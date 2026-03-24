@@ -676,6 +676,22 @@ class Number(Primitive):
         return build_number(None, normalizedinttype(self._type))
 
 
+def _number_types_compatible(t1, t2):
+    """Check if two Number types are compatible (same bit width and signedness).
+    Used during cross-compilation where distinct Number types may represent
+    the same underlying integer type (e.g. LONGLONG vs Signed on 64-bit host)."""
+    tp1, tp2 = t1._type, t2._type
+    bits1 = getattr(tp1, 'BITS', None)
+    bits2 = getattr(tp2, 'BITS', None)
+    if bits1 is None:
+        bits1 = r_int.BITS
+    if bits2 is None:
+        bits2 = r_int.BITS
+    signed1 = getattr(tp1, 'SIGNED', True)
+    signed2 = getattr(tp2, 'SIGNED', True)
+    return bits1 == bits2 and signed1 == signed2
+
+
 _numbertypes = {int: Number("Signed", int, intmask)}
 _numbertypes[r_int] = _numbertypes[int]
 _numbertypes[r_longlonglong] = Number("SignedLongLongLong", r_longlonglong,
@@ -1373,6 +1389,13 @@ class _abstract_ptr(object):
                     # special-cased in the backends.
                     elif (isinstance(ARG, ContainerType) and
                           typeOf(a) == Ptr(ARG)):
+                        pass
+                    # Cross-compilation: allow compatible Number types
+                    # (same bit width and signedness), e.g. LONGLONG vs Signed
+                    # when both are 64-bit signed on the host.
+                    elif (isinstance(ARG, Number) and
+                          isinstance(typeOf(a), Number) and
+                          _number_types_compatible(ARG, typeOf(a))):
                         pass
                     else:
                         args_repr = [typeOf(arg) for arg in args]
