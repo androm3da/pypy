@@ -2,6 +2,7 @@ import math
 import sys
 
 from rpython.rlib.objectmodel import Symbolic, ComputedIntSymbolic, CDefinedIntSymbolic
+from rpython.rlib import rarithmetic as _rarithmetic
 from rpython.rlib.rarithmetic import r_longlong, is_emulated_long
 from rpython.rtyper.lltypesystem import rffi, llgroup
 from rpython.rtyper.lltypesystem.llmemory import (Address, AddressOffset,
@@ -92,8 +93,9 @@ def name_signed(value, db):
     if value is None or isinstance(value, _uninitialized):
         assert not db.completed
         return None
-    if value == -sys.maxint-1:   # blame C
-        return lll('(-%dL-1L)') % sys.maxint
+    _maxint = _rarithmetic.maxint
+    if value == -_maxint-1:   # blame C
+        return lll('(-%dL-1L)') % _maxint
     else:
         return lll('%dL') % value
 
@@ -278,3 +280,18 @@ define_c_primitive(rffi.ULONGLONG, 'unsigned long long', 'ULL')
 if SUPPORT_INT128:
     define_shifted_primitive(rffi.__INT128_T, signed=True)
     define_shifted_primitive(rffi.__UINT128_T, signed=False)
+
+# Register any remaining rffi NUMBER_TYPES not already in PrimitiveType.
+# During cross-compilation, types like TIME_T become distinct Number types
+# (instead of aliasing Signed or SignedLongLong) and need explicit registration.
+for _ll_type in rffi.NUMBER_TYPES:
+    if _ll_type not in PrimitiveType:
+        _c_name = _ll_type._name.lower()
+        _tp = _ll_type._type
+        _bits = getattr(_tp, 'BITS', 64)
+        _signed = getattr(_tp, 'SIGNED', True)
+        if _bits > 32:
+            _suffix = 'LL' if _signed else 'ULL'
+        else:
+            _suffix = ''
+        define_c_primitive(_ll_type, _c_name, _suffix)

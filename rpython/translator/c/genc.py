@@ -816,7 +816,9 @@ def gen_startupcode(f, database):
 
 def commondefs(defines):
     from rpython.rlib.rarithmetic import LONG_BIT, LONGLONG_BIT
-    defines['PYPY_LONG_BIT'] = LONG_BIT
+    from rpython.translator.platform import platform as current_platform
+    target_long_bit = getattr(current_platform, 'target_long_bit', LONG_BIT)
+    defines['PYPY_LONG_BIT'] = target_long_bit
     defines['PYPY_LONGLONG_BIT'] = LONGLONG_BIT
 
 def add_extra_files(database, eci):
