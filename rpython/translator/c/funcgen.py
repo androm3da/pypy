@@ -5,7 +5,7 @@ from rpython.translator.c.support import c_string_constant, barebonearray
 from rpython.flowspace.model import Variable, Constant, mkentrymap
 from rpython.rtyper.lltypesystem.lltype import (Ptr, Void, Bool, Signed, Unsigned,
     SignedLongLong, Float, UnsignedLongLong, Char, UniChar, ContainerType,
-    Array, FixedSizeArray, ForwardReference, FuncType, typeOf)
+    Array, FixedSizeArray, ForwardReference, FuncType, Number, typeOf)
 from rpython.rtyper.lltypesystem.rffi import INT
 from rpython.rtyper.lltypesystem.llmemory import Address
 from rpython.translator.backendopt.ssa import SSI_to_SSA
@@ -865,6 +865,15 @@ class FunctionCodeGenerator(object):
                     format.append('%I64u')
                 else:
                     format.append('%llu')
+            elif isinstance(T, Number):
+                # Cross-compilation Number types (e.g. LONGLONG on 32-bit target)
+                tp = T._type
+                bits = getattr(tp, 'BITS', 64)
+                signed = getattr(tp, 'SIGNED', True)
+                if bits > 32:
+                    format.append('%lld' if signed else '%llu')
+                else:
+                    format.append('%ld' if signed else '%lu')
             else:
                 raise Exception("don't know how to debug_print %r" % (T,))
             argv.append(self.expr(arg))

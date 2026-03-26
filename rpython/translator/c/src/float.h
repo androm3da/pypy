@@ -70,7 +70,12 @@ static _inline double rpy_cast_ulonglong_to_float(unsigned long long x)
 #ifdef HAVE_LONG_LONG
 #define OP_CAST_FLOAT_TO_LONGLONG(x,r) r = (long long)(x)
 #define OP_CAST_FLOAT_TO_ULONGLONG(x,r) r = (unsigned long long)(x)
-#define OP_CONVERT_FLOAT_BYTES_TO_LONGLONG(x,r) { double _f = x; memcpy(&r, &_f, sizeof(double)); }
-#define OP_CONVERT_LONGLONG_BYTES_TO_FLOAT(x,r) { long long _f = x; memcpy(&r, &_f, sizeof(long long)); }
+/* Use a long long temporary to avoid buffer overflow when r is Signed
+   (4 bytes on 32-bit targets) but sizeof(double) is 8. */
+#define OP_CONVERT_FLOAT_BYTES_TO_LONGLONG(x,r) \
+    { double _f = x; long long _ll; memcpy(&_ll, &_f, sizeof(double)); \
+      memcpy(&r, &_ll, sizeof(r)); }
+#define OP_CONVERT_LONGLONG_BYTES_TO_FLOAT(x,r) \
+    { long long _ll = (long long)(x); memcpy(&r, &_ll, sizeof(double)); }
 #endif
 

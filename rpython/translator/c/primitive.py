@@ -16,7 +16,17 @@ from rpython.rtyper.tool.rffi_platform import memory_alignment
 from rpython.translator.c.support import cdecl, barebonearray
 
 
-SUPPORT_INT128 = hasattr(rffi, '__INT128_T')
+def _check_support_int128():
+    if not hasattr(rffi, '__INT128_T'):
+        return False
+    try:
+        from rpython.translator.platform import platform as _platform
+        if hasattr(_platform, 'target_supports_int128'):
+            return _platform.target_supports_int128
+    except ImportError:
+        pass
+    return True
+SUPPORT_INT128 = _check_support_int128()
 MEMORY_ALIGNMENT = memory_alignment()
 
 # ____________________________________________________________
