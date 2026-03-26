@@ -9,6 +9,24 @@ from rpython.rlib.jit import elidable, oopspec
 from rpython.rlib.rarithmetic import r_longlong, r_ulonglong, r_uint, intmask
 from rpython.rlib.rarithmetic import LONG_BIT
 from rpython.rtyper import rlist
+
+def _update_long_bit(target_bits):
+    """Update LONG_BIT for cross-compilation.  Called from
+    translationoption.set_opt_level() after set_platform()."""
+    global LONG_BIT
+    LONG_BIT = target_bits
+
+def _update_for_cross_compilation():
+    """Rebind r_longlong, r_ulonglong, etc. for cross-compilation.
+
+    On a 64-bit host, r_longlong == r_int and SignedLongLong == Signed.
+    After _update_types_for_cross_compilation creates distinct types for
+    a 32-bit target, we rebind these module-level names so that the
+    llong helper functions use the correct 64-bit types.
+    """
+    global r_longlong, r_ulonglong
+    r_longlong = rffi.r_longlong
+    r_ulonglong = rffi.r_ulonglong
 from rpython.rtyper.lltypesystem import rlist as rlist_ll
 from rpython.rtyper.annlowlevel import MixLevelHelperAnnotator
 from rpython.rtyper.extregistry import ExtRegistryEntry
@@ -299,7 +317,7 @@ _ll_1_ll_math_ll_math_sqrt = ll_math.ll_math_sqrt
 # -----------------
 
 def u_to_longlong(x):
-    return rffi.cast(lltype.SignedLongLong, x)
+    return rffi.cast(rffi.LONGLONG, x)
 
 def _ll_1_llong_invert(xll):
     y = ~r_ulonglong(xll)
@@ -427,10 +445,10 @@ def _ll_1_ullong_from_float(xf):
     return r_ulonglong(xf)
 
 def _ll_1_llong_to_float(xll):
-    return float(rffi.cast(lltype.SignedLongLong, xll))
+    return float(rffi.cast(rffi.LONGLONG, xll))
 
 def _ll_1_ullong_u_to_float(xull):
-    return float(rffi.cast(lltype.UnsignedLongLong, xull))
+    return float(rffi.cast(rffi.ULONGLONG, xull))
 
 
 def _ll_1_llong_abs(xll):

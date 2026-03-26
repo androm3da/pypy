@@ -1,6 +1,7 @@
 import sys
 from rpython.jit.metainterp.history import ConstInt
 from rpython.jit.metainterp.optimize import InvalidLoop
+from rpython.jit.metainterp.optimizeopt import intutils
 from rpython.jit.metainterp.optimizeopt.intutils import IntBound
 from rpython.jit.metainterp.optimizeopt.optimizer import (Optimization, CONST_1,
     CONST_0)
@@ -102,7 +103,7 @@ class OptIntBounds(Optimization):
         if isinstance(arg1, ConstInt):
             # invert the constant
             i1 = arg1.getint()
-            if i1 == -sys.maxint - 1:
+            if i1 == intutils.MININT:
                 return
             inv_arg1 = ConstInt(-i1)
             self.optimizer.pure_from_args2(rop.INT_ADD, arg0, inv_arg1, op)
@@ -128,13 +129,13 @@ class OptIntBounds(Optimization):
         if isinstance(arg0, ConstInt):
             # invert the constant
             i0 = arg0.getint()
-            if i0 == -sys.maxint - 1:
+            if i0 == intutils.MININT:
                 return
             inv_arg0 = ConstInt(-i0)
         elif isinstance(arg1, ConstInt):
             # commutative
             i0 = arg1.getint()
-            if i0 == -sys.maxint - 1:
+            if i0 == intutils.MININT:
                 return
             inv_arg0 = ConstInt(-i0)
             arg1 = arg0

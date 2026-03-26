@@ -13,6 +13,15 @@ from rpython.rlib.objectmodel import compute_hash
 
 
 def _is_target_64_bit():
+    # When cross-compiling from a 64-bit host to a 32-bit target,
+    # Signed and SignedLongLong are the same lltype object (because
+    # r_int == r_longlong on 64-bit hosts).  In that case, we MUST
+    # use the 64-bit path because is_longlong() cannot distinguish
+    # Signed from SignedLongLong and would incorrectly classify all
+    # Signed values as longlong (causing FloatFrontendOp instead of
+    # IntFrontendOp in the JIT).
+    if lltype.Signed is lltype.SignedLongLong:
+        return True
     try:
         from rpython.translator.platform import platform as current_platform
         target_long_bit = getattr(current_platform, 'target_long_bit', None)

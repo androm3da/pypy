@@ -1,4 +1,5 @@
 import ctypes
+import struct as _struct
 from rpython.rtyper.lltypesystem import lltype, ll2ctypes, llmemory, rffi
 from rpython.rlib.objectmodel import specialize
 from rpython.rlib.unroll import unrolling_iterable
@@ -54,7 +55,7 @@ def get_array_token(T, translate_support_code):
         if T._hints.get('nolength', None):
             ofs_length = -1
         else:
-            assert carray.length.size == WORD
+            assert carray.length.size == _struct.calcsize('l')  # host size
             ofs_length = before_array_part + carray.length.offset
         basesize = before_array_part + carray.items.offset
         basesize += T._hints.get('extra_item_after_alloc', 0)  # +1 for STR
@@ -64,7 +65,22 @@ def get_array_token(T, translate_support_code):
 
 # ____________________________________________________________
 
-WORD         = get_size(lltype.Signed, False)
+def _get_word_size():
+    """Return the target WORD size (bytes per Signed/pointer).
+
+    For cross-compilation, use the target platform's long bit size.
+    Falls back to the host's sizeof(Signed) for native compilation.
+    """
+    try:
+        from rpython.translator.platform import platform as current_platform
+        target_long_bit = getattr(current_platform, 'target_long_bit', None)
+        if target_long_bit is not None:
+            return target_long_bit // 8
+    except ImportError:
+        pass
+    return rffi.sizeof(lltype.Signed)
+
+WORD         = _get_word_size()
 SIZEOF_CHAR  = get_size(lltype.Char, False)
 SIZEOF_SHORT = get_size(rffi.SHORT, False)
 SIZEOF_INT   = get_size(rffi.INT, False)

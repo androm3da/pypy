@@ -324,7 +324,6 @@ class AbstractLLCPU(AbstractCPU):
             finally:
                 if not self.translate_support_code:
                     LLInterpreter.current_interpreter = prev_interpreter
-            #llop.debug_print(lltype.Void, "<<<< Back")
             return ll_frame
         return execute_token
 

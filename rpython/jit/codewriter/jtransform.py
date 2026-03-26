@@ -1562,9 +1562,17 @@ class Transformer(object):
         op0 = SpaceOperation('cast_int_to_longlong',
                              [Constant(0, lltype.Signed)],
                              v)
+        ops0 = self.rewrite_operation(op0)
+        if ops0 is None:
+            # No-op cast (same-size types on host during cross-compilation).
+            v = Constant(lltype._cast_whatever(lltype.SignedLongLong, 0),
+                         lltype.SignedLongLong)
+            ops0_list = []
+        else:
+            ops0_list = self._normalize(ops0)
         args = [v, op.args[0]]
         op1 = SpaceOperation('llong_sub', args, op.result)
-        return (self._normalize(self.rewrite_operation(op0)) +
+        return (ops0_list +
                 self._normalize(self.rewrite_operation(op1)))
 
     def rewrite_op_llong_is_true(self, op):
@@ -1572,9 +1580,18 @@ class Transformer(object):
         op0 = SpaceOperation('cast_primitive',
                              [Constant(0, lltype.Signed)],
                              v)
+        ops0 = self.rewrite_operation(op0)
+        if ops0 is None:
+            # No-op cast (same-size types on host during cross-compilation).
+            # Use the constant directly with the target type.
+            v = Constant(lltype._cast_whatever(op.args[0].concretetype, 0),
+                         op.args[0].concretetype)
+            ops0_list = []
+        else:
+            ops0_list = self._normalize(ops0)
         args = [op.args[0], v]
         op1 = SpaceOperation('llong_ne', args, op.result)
-        return (self._normalize(self.rewrite_operation(op0)) +
+        return (ops0_list +
                 self._normalize(self.rewrite_operation(op1)))
 
     rewrite_op_ullong_is_true = rewrite_op_llong_is_true

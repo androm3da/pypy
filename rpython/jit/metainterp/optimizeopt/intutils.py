@@ -70,6 +70,37 @@ TNUM_ONLY_MASK_UNKNOWN = r_uint(-1)
 TNUM_ONLY_MASK_DEFAULT = TNUM_ONLY_MASK_UNKNOWN
 
 
+def _update_for_target_long_bit(target_bits):
+    """Update MAXINT/MININT/IS_64_BIT/LONG_BIT for cross-compilation to a
+    target with a different word size.  Called from
+    translationoption.set_opt_level() after set_platform().
+    """
+    global MAXINT, MININT, IS_64_BIT, LONG_BIT
+    global TNUM_ONLY_MASK_UNKNOWN, TNUM_ONLY_MASK_DEFAULT
+    LONG_BIT = target_bits
+    MAXINT = (1 << (target_bits - 1)) - 1
+    MININT = -(1 << (target_bits - 1))
+    IS_64_BIT = target_bits > 32
+    # Update tnum mask for the target word size.  On a 64-bit host,
+    # r_uint(-1) is 0xFFFFFFFFFFFFFFFF which truncates on a 32-bit target.
+    TNUM_ONLY_MASK_UNKNOWN = r_uint((1 << target_bits) - 1)
+    TNUM_ONLY_MASK_DEFAULT = TNUM_ONLY_MASK_UNKNOWN
+    # Update function default arguments that captured the old host
+    # MAXINT/MININT at class definition time.
+    init_fn = IntBound.__init__
+    if hasattr(init_fn, 'im_func'):
+        init_fn = init_fn.im_func    # Python 2 unbound method
+    init_fn.__defaults__ = (
+        MININT, MAXINT, TNUM_ONLY_VALUE_DEFAULT, TNUM_ONLY_MASK_DEFAULT, True)
+    for name, val in [
+            ('_get_minimum_signed_by_knownbits_atleast', (MININT,)),
+            ('_get_maximum_signed_by_knownbits_atmost', (MAXINT,))]:
+        fn = getattr(IntBound, name)
+        if hasattr(fn, 'im_func'):
+            fn = fn.im_func
+        fn.__defaults__ = val
+
+
 class IntBound(AbstractInfo):
     """
     Abstract domain representation of an integer,

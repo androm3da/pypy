@@ -56,8 +56,8 @@ def getkind(TYPE, supports_floats=True,
             raise NotImplementedError("type %s not supported" % TYPE)
         if (TYPE != llmemory.Address and
             rffi.sizeof(TYPE) > rffi.sizeof(lltype.Signed)):
-            if supports_longlong and TYPE is not lltype.LongFloat:
-                assert rffi.sizeof(TYPE) == 8
+            if (supports_longlong and TYPE is not lltype.LongFloat
+                    and rffi.sizeof(TYPE) == 8):
                 return 'float'
             raise NotImplementedError("type %s is too large" % TYPE)
         return "int"
@@ -101,7 +101,7 @@ class AbstractDescr(AbstractValue):
         return -1
 
     def get_ei_index(self):
-        return sys.maxint
+        return 0x7fffffff    # sentinel: fits in 32-bit Signed
 
     def repr_of_descr(self):
         return '%r' % (self,)
@@ -687,28 +687,24 @@ class FloatFrontendOp(FloatOp, FrontendOp):
 
 
 class RefFrontendOp(RefOp, FrontendOp):
-    _attrs_ = ('position_and_flags', '_resref', '_heapc_deps')
-    if LONG_BIT == 32:
-        _attrs_ += ('_heapc_flags',)   # on 64 bit, this gets stored into the
-        _heapc_flags = r_uint(0)       # high 32 bits of 'position_and_flags'
+    # Always use a separate _heapc_flags field.  On 64-bit native builds
+    # this wastes one word per RefFrontendOp, but it's necessary for
+    # correctness when cross-compiling to 32-bit targets (where Signed
+    # is 4 bytes and the >> 32 / << 32 trick produces wrong results due
+    # to shift clamping).
+    _attrs_ = ('position_and_flags', '_resref', '_heapc_deps',
+                '_heapc_flags')
+    _heapc_flags = r_uint(0)
     _heapc_deps = None
 
     def __init__(self, pos, value):
         FrontendOp.__init__(self, pos)
         self._resref = value
 
-    if LONG_BIT == 32:
-        def _get_heapc_flags(self):
-            return self._heapc_flags
-        def _set_heapc_flags(self, value):
-            self._heapc_flags = value
-    else:
-        def _get_heapc_flags(self):
-            return self.position_and_flags >> 32
-        def _set_heapc_flags(self, value):
-            self.position_and_flags = (
-                (self.position_and_flags & 0xFFFFFFFF) |
-                (value << 32))
+    def _get_heapc_flags(self):
+        return self._heapc_flags
+    def _set_heapc_flags(self, value):
+        self._heapc_flags = value
 
 
 class History(object):

@@ -41,7 +41,8 @@ class LeaveFrame(jitexc.JitException):
 
 def signedord(c):
     value = ord(c)
-    value = intmask(value << (LONG_BIT-8)) >> (LONG_BIT-8)
+    if value >= 0x80:
+        value -= 0x100
     return value
 
 NULL = lltype.nullptr(llmemory.GCREF.TO)
