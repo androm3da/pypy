@@ -10,8 +10,20 @@ from rpython.rlib.objectmodel import we_are_translated, specialize, not_rpython
 from rpython.rtyper.extregistry import ExtRegistryEntry
 from rpython.translator.tool.cbuild import ExternalCompilationInfo
 from rpython.rlib import rgc
-from rpython.rlib.rarithmetic import maxint as MAXINT
+def _target_maxint():
+    """Return the target platform's maxint (may differ from host during
+    cross-compilation)."""
+    try:
+        from rpython.translator.platform import platform as _platform
+        target_long_bit = getattr(_platform, 'target_long_bit', None)
+        if target_long_bit is not None:
+            return (1 << (target_long_bit - 1)) - 1
+    except ImportError:
+        pass
+    from rpython.rlib.rarithmetic import maxint
+    return maxint
 
+MAXINT = _target_maxint()
 
 REFCNT_FROM_PYPY       = MAXINT // 4 + 1
 REFCNT_FROM_PYPY_LIGHT = REFCNT_FROM_PYPY + (MAXINT // 2 + 1)

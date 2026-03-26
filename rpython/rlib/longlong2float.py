@@ -9,7 +9,7 @@ in which it does not work.
 from __future__ import with_statement
 import sys
 from rpython.annotator import model as annmodel
-from rpython.rlib.rarithmetic import r_int64, intmask, r_longlong, r_int
+from rpython.rlib.rarithmetic import r_int64, intmask, r_longlong, r_int, base_int
 from rpython.rtyper.lltypesystem import lltype, rffi
 from rpython.rtyper.extregistry import ExtRegistryEntry
 from rpython.translator.tool.cbuild import ExternalCompilationInfo
@@ -89,7 +89,13 @@ class LongLong2FloatEntry(ExtRegistryEntry):
     _about_ = longlong2float
 
     def compute_result_annotation(self, s_longlong):
-        assert annmodel.SomeInteger(knowntype=r_int64).contains(s_longlong)
+        assert isinstance(s_longlong, annmodel.SomeInteger)
+        # Accept any 64-bit signed integer type, including cross-compilation
+        # types like r_LONGLONG that are distinct from r_int64 on the host.
+        kt = s_longlong.knowntype
+        if kt is not int and kt is not r_int64:
+            assert issubclass(kt, base_int)
+            assert kt.BITS == 64 and kt.SIGN
         return annmodel.SomeFloat()
 
     def specialize_call(self, hop):
