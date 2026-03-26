@@ -608,6 +608,38 @@ NUMBER_TYPES.append(UINT_real)
 # 'int' type, whereas rarithmetic.r_int corresponds to the
 # Python-level int type (which is a C long).  Fun.
 
+_cross_compilation_types_updated = False
+
+def _update_types_for_cross_compilation(target_long_bit):
+    """Called after set_platform() to fix types that aliased Signed/Unsigned
+    on the 64-bit host but must be distinct types on a 32-bit target.
+
+    For example, time_t is 8 bytes on both the 64-bit host and 32-bit
+    Hexagon musl target, but on the host it aliases Signed (= long = 8 bytes)
+    while on the target Signed = long = 4 bytes.  So time_t must become a
+    distinct type that maps to 'long long' in the generated C code.
+    """
+    global _cross_compilation_types_updated
+    if _cross_compilation_types_updated:
+        return
+    _cross_compilation_types_updated = True
+    updates = platform.update_types_for_cross_compilation(target_long_bit)
+    if not updates:
+        return
+    import sys
+    module = sys.modules[__name__]
+    for name, new_tp in updates.items():
+        # Update module-level type and pointer globals (e.g. TIME_T, TIME_TP)
+        setattr(module, name, new_tp)
+        tpp = lltype.Ptr(lltype.Array(new_tp, hints={'nolength': True}))
+        setattr(module, name + 'P', tpp)
+        # Update r_* class global
+        rclass = platform.numbertype_to_rclass[new_tp]
+        rname = 'r_' + name.lower()
+        setattr(module, rname, rclass)
+        if new_tp not in NUMBER_TYPES:
+            NUMBER_TYPES.append(new_tp)
+
 if os.name == 'nt':
     MODE_T = INT
 

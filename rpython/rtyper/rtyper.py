@@ -33,20 +33,10 @@ def _number_types_compatible(t1, t2):
 
     On 64-bit hosts cross-compiling to 32-bit, types like TIME_T and Signed
     may be distinct Number objects but share the same integer width/signedness.
+    Also, after normalization, INT (32-bit) promotes to Signed on the host,
+    so INT and Signed are compatible.
     """
-    tp1, tp2 = t1._type, t2._type
-    bits1 = getattr(tp1, 'BITS', None)
-    bits2 = getattr(tp2, 'BITS', None)
-    # Python builtin 'int' doesn't have BITS; use r_int.BITS
-    if bits1 is None:
-        from rpython.rlib.rarithmetic import r_int
-        bits1 = r_int.BITS
-    if bits2 is None:
-        from rpython.rlib.rarithmetic import r_int
-        bits2 = r_int.BITS
-    signed1 = getattr(tp1, 'SIGNED', True)
-    signed2 = getattr(tp2, 'SIGNED', True)
-    return bits1 == bits2 and signed1 == signed2
+    return t1.normalized() is t2.normalized()
 from rpython.rtyper.rclass import RootClassRepr
 from rpython.tool.pairtype import pair
 from rpython.translator.unsimplify import insert_empty_block

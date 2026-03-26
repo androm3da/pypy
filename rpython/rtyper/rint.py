@@ -180,8 +180,7 @@ def _infer_opprefix(numtype):
 
     Needed for cross-compilation: when the target's 'long' is 32-bit,
     rffi.LONG resolves to Number('INT', r_INT_32) which has no opprefix.
-    We check the target's rffi.LONG size and assign 'int_'/'uint_' prefix
-    to types matching the target word size.
+    We use the target platform's word size to assign the right prefix.
     """
     if not isinstance(numtype, Number):
         return None
@@ -189,21 +188,16 @@ def _infer_opprefix(numtype):
     if not hasattr(tp, 'BITS'):
         return None
     try:
-        from rpython.rtyper.lltypesystem import rffi as _rffi
+        from rpython.translator.platform import platform as _platform
     except ImportError:
         return None
-    # Check if type matches target's 'long' (word-sized integer)
-    long_tp = getattr(_rffi, 'LONG', None)
-    if long_tp is not None and isinstance(long_tp, Number):
-        long_bits = getattr(long_tp._type, 'BITS', None)
-        if long_bits is not None and tp.BITS == long_bits:
-            return 'int_' if tp.SIGNED else 'uint_'
-    # Check if type matches target's 'long long'
-    llong_tp = getattr(_rffi, 'LONGLONG', None)
-    if llong_tp is not None and isinstance(llong_tp, Number):
-        llong_bits = getattr(llong_tp._type, 'BITS', None)
-        if llong_bits is not None and tp.BITS == llong_bits:
-            return 'llong_' if tp.SIGNED else 'ullong_'
+    target_long_bit = getattr(_platform, 'target_long_bit', None)
+    if target_long_bit is None:
+        return None
+    if tp.BITS <= target_long_bit:
+        return 'int_' if tp.SIGNED else 'uint_'
+    if tp.BITS <= 64:
+        return 'llong_' if tp.SIGNED else 'ullong_'
     return None
 
 def getintegerrepr(lltype, prefix=None):
@@ -215,6 +209,20 @@ def getintegerrepr(lltype, prefix=None):
         prefix = _infer_opprefix(lltype)
     repr = _integer_reprs[lltype] = IntegerRepr(lltype, prefix)
     return repr
+
+def _update_for_cross_compilation():
+    """Rebind SignedLongLong/UnsignedLongLong to cross-compilation types.
+
+    On a 64-bit host, SignedLongLong == Signed because r_longlong == r_int.
+    After _update_types_for_cross_compilation creates distinct LONGLONG types
+    for a 32-bit target, we rebind the module-level names so that the llong
+    helper functions (ll_llong_py_div etc.) use the correct 64-bit types at
+    annotation time.
+    """
+    global SignedLongLong, UnsignedLongLong
+    from rpython.rtyper.lltypesystem import rffi
+    SignedLongLong = rffi.LONGLONG
+    UnsignedLongLong = rffi.ULONGLONG
 
 class __extend__(annmodel.SomeInteger):
     def rtyper_makerepr(self, rtyper):
@@ -417,7 +425,12 @@ def _rtype_call_helper(hop, func, implicit_excs=[]):
     if all(s_arg.nonneg for s_arg in hop.args_s):
         llfunc = globals().get(funcname + '_nonnegargs', llfunc)
     v_result = hop.gendirectcall(llfunc, *vlist)
-    assert v_result.concretetype == repr.lowleveltype
+    if v_result.concretetype != repr.lowleveltype:
+        # Cross-compilation: the llong helper returns a specific type
+        # (e.g. LONGLONG) but the caller may expect a compatible type
+        # (e.g. TIME_T).  Insert a cast_primitive to fix the type.
+        v_result = hop.llops.genop('cast_primitive', [v_result],
+                                   resulttype=repr.lowleveltype)
     return v_result
 
 
@@ -479,33 +492,27 @@ def ll_uint_py_div_zer(x, y):
         raise ZeroDivisionError("unsigned integer division")
     return ll_uint_py_div(x, y)
 
-if SignedLongLong == Signed:
-    ll_llong_py_div      = ll_int_py_div
-    ll_llong_py_div_zer  = ll_int_py_div_zer
-    ll_ullong_py_div     = ll_uint_py_div
-    ll_ullong_py_div_zer = ll_uint_py_div_zer
-else:
-    @jit.dont_look_inside
-    def ll_llong_py_div(x, y):
-        r = llop.llong_floordiv(SignedLongLong, x, y)  # <= truncates like in C
-        p = r * y
-        if y < 0: u = p - x
-        else:     u = x - p
-        return r + (u >> LLONG_BITS_1)
+@jit.dont_look_inside
+def ll_llong_py_div(x, y):
+    r = llop.llong_floordiv(SignedLongLong, x, y)  # <= truncates like in C
+    p = r * y
+    if y < 0: u = p - x
+    else:     u = x - p
+    return r + (u >> LLONG_BITS_1)
 
-    def ll_llong_py_div_zer(x, y):
-        if y == 0:
-            raise ZeroDivisionError("longlong division")
-        return ll_llong_py_div(x, y)
+def ll_llong_py_div_zer(x, y):
+    if y == 0:
+        raise ZeroDivisionError("longlong division")
+    return ll_llong_py_div(x, y)
 
-    @jit.dont_look_inside
-    def ll_ullong_py_div(x, y):
-        return llop.ullong_floordiv(UnsignedLongLong, x, y)
+@jit.dont_look_inside
+def ll_ullong_py_div(x, y):
+    return llop.ullong_floordiv(UnsignedLongLong, x, y)
 
-    def ll_ullong_py_div_zer(x, y):
-        if y == 0:
-            raise ZeroDivisionError("unsigned longlong division")
-        return ll_ullong_py_div(x, y)
+def ll_ullong_py_div_zer(x, y):
+    if y == 0:
+        raise ZeroDivisionError("unsigned longlong division")
+    return ll_ullong_py_div(x, y)
 
 @jit.dont_look_inside
 def ll_lllong_py_div(x, y):
@@ -570,32 +577,26 @@ def ll_uint_py_mod_zer(x, y):
         raise ZeroDivisionError
     return ll_uint_py_mod(x, y)
 
-if SignedLongLong == Signed:
-    ll_llong_py_mod      = ll_int_py_mod
-    ll_llong_py_mod_zer  = ll_int_py_mod_zer
-    ll_ullong_py_mod     = ll_uint_py_mod
-    ll_ullong_py_mod_zer = ll_uint_py_mod_zer
-else:
-    @jit.dont_look_inside
-    def ll_llong_py_mod(x, y):
-        r = llop.llong_mod(SignedLongLong, x, y)    # <= truncates like in C
-        if y < 0: u = -r
-        else:     u = r
-        return r + (y & (u >> LLONG_BITS_1))
+@jit.dont_look_inside
+def ll_llong_py_mod(x, y):
+    r = llop.llong_mod(SignedLongLong, x, y)    # <= truncates like in C
+    if y < 0: u = -r
+    else:     u = r
+    return r + (y & (u >> LLONG_BITS_1))
 
-    def ll_llong_py_mod_zer(x, y):
-        if y == 0:
-            raise ZeroDivisionError
-        return ll_llong_py_mod(x, y)
+def ll_llong_py_mod_zer(x, y):
+    if y == 0:
+        raise ZeroDivisionError
+    return ll_llong_py_mod(x, y)
 
-    @jit.dont_look_inside
-    def ll_ullong_py_mod(x, y):
-        return llop.ullong_mod(UnsignedLongLong, x, y)
+@jit.dont_look_inside
+def ll_ullong_py_mod(x, y):
+    return llop.ullong_mod(UnsignedLongLong, x, y)
 
-    def ll_ullong_py_mod_zer(x, y):
-        if y == 0:
-            raise ZeroDivisionError
-        return ll_ullong_py_mod(x, y)
+def ll_ullong_py_mod_zer(x, y):
+    if y == 0:
+        raise ZeroDivisionError
+    return ll_ullong_py_mod(x, y)
 
 @jit.dont_look_inside
 def ll_lllong_py_mod(x, y):
@@ -683,32 +684,46 @@ def ll_check_unichr(n):
 
 class __extend__(pairtype(IntegerRepr, FloatRepr)):
     def convert_from_to((r_from, r_to), v, llops):
-        if r_from.lowleveltype == Unsigned and r_to.lowleveltype == Float:
-            log.debug('explicit cast_uint_to_float')
-            return llops.genop('cast_uint_to_float', [v], resulttype=Float)
-        if r_from.lowleveltype == Signed and r_to.lowleveltype == Float:
+        if r_to.lowleveltype != Float:
+            return NotImplemented
+        # Use _opprefix to dispatch: handles both standard types and
+        # cross-compilation Number types (e.g. new ULONGLONG on 32-bit target)
+        prefix = r_from._opprefix
+        if prefix == 'int_':
             log.debug('explicit cast_int_to_float')
             return llops.genop('cast_int_to_float', [v], resulttype=Float)
-        if r_from.lowleveltype == SignedLongLong and r_to.lowleveltype == Float:
+        if prefix == 'uint_':
+            log.debug('explicit cast_uint_to_float')
+            return llops.genop('cast_uint_to_float', [v], resulttype=Float)
+        if prefix == 'llong_':
             log.debug('explicit cast_longlong_to_float')
             return llops.genop('cast_longlong_to_float', [v], resulttype=Float)
-        if r_from.lowleveltype == UnsignedLongLong and r_to.lowleveltype == Float:
+        if prefix == 'ullong_':
             log.debug('explicit cast_ulonglong_to_float')
             return llops.genop('cast_ulonglong_to_float', [v], resulttype=Float)
         return NotImplemented
 
 class __extend__(pairtype(FloatRepr, IntegerRepr)):
     def convert_from_to((r_from, r_to), v, llops):
-        if r_from.lowleveltype == Float and r_to.lowleveltype == Unsigned:
-            log.debug('explicit cast_float_to_uint')
-            return llops.genop('cast_float_to_uint', [v], resulttype=Unsigned)
-        if r_from.lowleveltype == Float and r_to.lowleveltype == Signed:
+        if r_from.lowleveltype != Float:
+            return NotImplemented
+        # Use _opprefix to dispatch: handles both standard types and
+        # cross-compilation Number types (e.g. new ULONGLONG on 32-bit target)
+        prefix = r_to._opprefix
+        if prefix == 'int_':
             log.debug('explicit cast_float_to_int')
-            return llops.genop('cast_float_to_int', [v], resulttype=Signed)
-        if r_from.lowleveltype == Float and r_to.lowleveltype == SignedLongLong:
+            return llops.genop('cast_float_to_int', [v],
+                               resulttype=r_to.lowleveltype)
+        if prefix == 'uint_':
+            log.debug('explicit cast_float_to_uint')
+            return llops.genop('cast_float_to_uint', [v],
+                               resulttype=r_to.lowleveltype)
+        if prefix == 'llong_':
             log.debug('explicit cast_float_to_longlong')
-            return llops.genop('cast_float_to_longlong', [v], resulttype=SignedLongLong)
-        if r_from.lowleveltype == Float and r_to.lowleveltype == UnsignedLongLong:
+            return llops.genop('cast_float_to_longlong', [v],
+                               resulttype=r_to.lowleveltype)
+        if prefix == 'ullong_':
             log.debug('explicit cast_float_to_ulonglong')
-            return llops.genop('cast_float_to_ulonglong', [v], resulttype=UnsignedLongLong)
+            return llops.genop('cast_float_to_ulonglong', [v],
+                               resulttype=r_to.lowleveltype)
         return NotImplemented

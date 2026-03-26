@@ -384,6 +384,22 @@ def build_new_ctypes_type(T, delayed_builders):
         _setup_ctypes_cache()
         if T in _ctypes_cache:
             return _ctypes_cache[T]
+        # Handle cross-compilation Number types (e.g. TIME_T, LONGLONG)
+        # that aren't in the standard cache.
+        if isinstance(T, lltype.Number):
+            rclass = T._type
+            bits = rclass.BITS
+            signed = rclass.SIGNED
+            if bits <= 8:
+                ct = ctypes.c_int8 if signed else ctypes.c_uint8
+            elif bits <= 16:
+                ct = ctypes.c_int16 if signed else ctypes.c_uint16
+            elif bits <= 32:
+                ct = ctypes.c_int32 if signed else ctypes.c_uint32
+            else:
+                ct = ctypes.c_int64 if signed else ctypes.c_uint64
+            _ctypes_cache[T] = ct
+            return ct
         raise NotImplementedError(T)
 
 def complete_builders(delayed_builders):

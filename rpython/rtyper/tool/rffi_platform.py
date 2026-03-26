@@ -306,7 +306,8 @@ class Struct(CConfigEntry):
                 offset = info['fldofs '  + fieldname]
                 size   = info['fldsize ' + fieldname]
                 c_fieldtype = config_result.get_entry_result(fieldtype)
-                layout_addfield(layout, offset, c_fieldtype, fieldname)
+                layout_addfield(layout, offset, c_fieldtype, fieldname,
+                                target_size=size)
             else:
                 offset = info['fldofs '  + fieldname]
                 size   = info['fldsize ' + fieldname]
@@ -315,7 +316,8 @@ class Struct(CConfigEntry):
                     pass       # ignore size and sign
                 elif (size, sign) != rffi.size_and_sign(fieldtype):
                     fieldtype = fixup_ctype(fieldtype, fieldname, (size, sign))
-                layout_addfield(layout, offset, fieldtype, fieldname)
+                layout_addfield(layout, offset, fieldtype, fieldname,
+                                target_size=size)
 
         n = 0
         padfields = []
@@ -695,9 +697,11 @@ class Field(object):
 def is_array_nolength(TYPE):
     return isinstance(TYPE, lltype.Array) and TYPE._hints.get('nolength', False)
 
-def layout_addfield(layout, offset, ctype, prefix):
+def layout_addfield(layout, offset, ctype, prefix, target_size=0):
     if is_array_nolength(ctype):
         size = len(layout) - offset    # all the rest of the struct
+    elif target_size > 0:
+        size = target_size  # cross-compilation: use target's field size
     else:
         size = _sizeof(ctype)
     name = prefix
@@ -720,6 +724,11 @@ def fixup_ctype(fieldtype, fieldname, expected_size_and_sign):
     if isinstance(fieldtype, lltype.FixedSizeArray):
         size, _ = expected_size_and_sign
         return lltype.FixedSizeArray(fieldtype.OF, size/_sizeof(fieldtype.OF))
+    # For cross-compilation (e.g. 64-bit host to 32-bit target), pointer
+    # fields may have a different size on the target.  The C code will be
+    # compiled for the target, so the pointer type is correct as-is.
+    if isinstance(fieldtype, lltype.Ptr):
+        return fieldtype
     raise TypeError("conflict between translating python and compiler field"
                     " type %r for symbol %r, expected size+sign %r" % (
                         fieldtype, fieldname, expected_size_and_sign))

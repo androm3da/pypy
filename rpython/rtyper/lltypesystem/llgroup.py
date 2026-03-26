@@ -58,6 +58,21 @@ else:
     HALFWORD = rffi.UINT
     r_halfword = rffi.r_uint
 
+def _update_for_target_long_bit(target_long_bit):
+    """Update HALFSHIFT/HALFWORD/MASK for cross-compilation to a target
+    with a different word size.  Called from translationoption.set_platform().
+    """
+    global HALFSHIFT, HALFWORD, r_halfword
+    if target_long_bit == 32:
+        HALFSHIFT = 16
+        HALFWORD = rffi.USHORT
+        r_halfword = rffi.r_ushort
+    else:
+        HALFSHIFT = 32
+        HALFWORD = rffi.UINT
+        r_halfword = rffi.r_uint
+    CombinedSymbolic.MASK = (1 << HALFSHIFT) - 1
+
 
 class GroupMemberOffset(llmemory.Symbolic):
     """The offset of a struct inside a group, stored compactly in a HALFWORD

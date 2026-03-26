@@ -68,7 +68,8 @@ class Platform:
     def __init__(self):
         self.types = {}
         self.numbertype_to_rclass = {}
-    
+        self._type_info = {}   # name -> (signed, size_in_bytes)
+
     def inttype(self, name, c_name, signed, **kwds):
         try:
             return self.types[name]
@@ -77,6 +78,7 @@ class Platform:
             return self._make_type(name, signed, size)
 
     def _make_type(self, name, signed, size):
+        self._type_info[name] = (signed, size)
         inttype = rarithmetic.build_int('r_' + name, signed, size*8)
         tp = lltype.build_number(name, inttype)
         # For cross-compilation: if this type aliased Signed/Unsigned but
@@ -92,6 +94,29 @@ class Platform:
         self.numbertype_to_rclass[tp] = inttype
         self.types[name] = tp
         return tp
+
+    def update_types_for_cross_compilation(self, target_long_bit):
+        """Re-evaluate types after the cross-compilation platform is set.
+
+        During initial setup, types are detected on the host compiler.
+        On a 64-bit host, 8-byte signed types (time_t, long long, etc.)
+        alias to Signed (= long = 8 bytes).  But on a 32-bit target,
+        Signed = long = 4 bytes, so these types must become distinct
+        Number types that map to 'long long' in C.
+        """
+        updates = {}
+        for name, (signed, size) in self._type_info.items():
+            tp = self.types[name]
+            if (tp is lltype.Signed or tp is lltype.Unsigned):
+                if size * 8 != target_long_bit:
+                    inttype = rarithmetic.build_int(
+                        'r_' + name, signed, size * 8,
+                        force_creation=True)
+                    new_tp = lltype.build_number(name, inttype)
+                    self.numbertype_to_rclass[new_tp] = inttype
+                    self.types[name] = new_tp
+                    updates[name] = new_tp
+        return updates
 
     def populate_inttypes(self, list, **kwds):
         """'list' is a list of (name, c_name, signed)."""
