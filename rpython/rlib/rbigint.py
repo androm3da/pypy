@@ -69,6 +69,53 @@ else:
 
 int_in_valid_range._always_inline_ = True
 
+# For cross-compilation (e.g. 64-bit host to 32-bit target): the module-level
+# LONG_BIT is the HOST value.  _RBIGINT_LONG_BIT tracks the TARGET value and
+# is patched by _update_rbigint_for_target() before annotation.
+_RBIGINT_LONG_BIT = LONG_BIT
+
+def _update_rbigint_for_target(target_long_bit):
+    """Reconfigure rbigint digit sizes for cross-compilation to a 32-bit target.
+
+    When the host is 64-bit with __int128, SHIFT=63 and digits are stored in
+    Signed (64-bit on host).  On a 32-bit target, Signed is only 32 bits and
+    cannot hold 63-bit digits.  This function resets to SHIFT=31 (the native
+    32-bit configuration) so all digit operations fit in 32-bit types.
+    """
+    global SHIFT, UDIGIT_TYPE, UDIGIT_MASK, LONG_TYPE, ULONG_TYPE
+    global STORE_TYPE, UNSIGNED_TYPE, MASK, FLOAT_MULTIPLIER
+    global int_in_valid_range, _RBIGINT_LONG_BIT
+    global _parts_cache, _parts_cache_10
+
+    if target_long_bit >= 64:
+        return  # no change needed
+
+    _RBIGINT_LONG_BIT = target_long_bit
+
+    # Use the 32-bit native configuration: SHIFT=31, 64-bit intermediates
+    SHIFT = 31
+    UDIGIT_TYPE = r_uint
+    UDIGIT_MASK = intmask
+    STORE_TYPE = lltype.Signed
+    UNSIGNED_TYPE = lltype.Unsigned
+    LONG_TYPE = rffi.LONGLONG
+    ULONG_TYPE = rffi.ULONGLONG
+    MASK = int((1 << SHIFT) - 1)
+    FLOAT_MULTIPLIER = float(1 << SHIFT)
+
+    # SHIFT=31 != LONG_BIT-1 (host: 31!=63), so use the range-checking variant
+    def int_in_valid_range(x):
+        if x > MASK or x < -MASK:
+            return False
+        return True
+    int_in_valid_range._always_inline_ = True
+
+    # Reinitialize the decimal formatting cache.  _parts_cache precomputes
+    # the largest power-of-base that fits in one digit (MASK).  With the old
+    # SHIFT=63, that was 10^18 for base-10; with SHIFT=31 it must be 10^9.
+    _parts_cache = _PartsCache()
+    _parts_cache_10 = _parts_cache.get_cached_parts(10)
+
 # Debugging digit array access.
 #
 # False == no checking at all
@@ -365,7 +412,7 @@ class rbigint(object):
         sign = -1 if msb >= 0x80 and signed else 1
         accum = _widen_digit(0)
         accumbits = 0
-        digits = newlist_hint(len(s) * 8 // LONG_BIT + 1)
+        digits = newlist_hint(len(s) * 8 // _RBIGINT_LONG_BIT + 1)
         carry = 1
 
         for i in itr:
@@ -1235,7 +1282,7 @@ class rbigint(object):
 
         # Left-to-right binary exponentiation (HAC Algorithm 14.79)
         # http://www.cacr.math.uwaterloo.ca/hac/about/chap14.pdf
-        j = 1 << (LONG_BIT-2)
+        j = 1 << (_RBIGINT_LONG_BIT-2)
 
         while j != 0:
             z = _help_mult(z, z, modulus)
@@ -2699,7 +2746,7 @@ def bit_length_int(val):
         count = 1
     else:
         count = 0
-    if LONG_BIT > 32 and val >= 2**32:
+    if _RBIGINT_LONG_BIT > 32 and val >= 2**32:
         val >>= 32
         count += 32
     if val >= 2**16:
@@ -3367,7 +3414,7 @@ def _hash(v):
     i = v.numdigits() - 1
     sign = v.get_sign()
     x = r_uint(0)
-    LONG_BIT_SHIFT = LONG_BIT - SHIFT
+    LONG_BIT_SHIFT = _RBIGINT_LONG_BIT - SHIFT
     while i >= 0:
         # Force a native long #-bits (32 or 64) circular shift
         x = (x << SHIFT) | (x >> LONG_BIT_SHIFT)
