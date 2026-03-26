@@ -5,7 +5,7 @@ import py
 
 from rpython.config.config import (OptionDescription, BoolOption, IntOption,
   ChoiceOption, StrOption, to_optparse)
-from rpython.config.translationoption import IS_64_BITS
+from rpython.config.translationoption import IS_64_BITS, _is_target_64_bits
 
 
 modulepath = py.path.local(__file__).dirpath().dirpath().join("module")
@@ -257,7 +257,7 @@ def set_pypy_opt_level(config, level):
     if level == 'mem':
         config.objspace.std.suggest(withprebuiltint=True)
         config.objspace.std.suggest(withliststrategies=True)
-        if not IS_64_BITS:
+        if not _is_target_64_bits():
             config.objspace.std.suggest(withsmalllong=True)
 
     # extra optimizations with the JIT
