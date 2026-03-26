@@ -388,6 +388,13 @@ class PyPyTarget(object):
     def get_entry_point(self, config):
         self.space = make_objspace(config)
 
+        # Force early creation of GC hook actions so they register in
+        # _nonperiodic_actions before annotation starts.  This ensures the
+        # annotator computes the correct common base type (AsyncAction) for
+        # the list, rather than just UserDelAction.
+        from pypy.module.gc.hook import LowLevelGcHooks
+        self.space.fromcache(LowLevelGcHooks)
+
         # manually imports app_main.py
         filename = join(pypydir, 'interpreter', 'app_main.py')
         app = gateway.applevel(open(filename).read(), 'app_main.py', 'app_main')

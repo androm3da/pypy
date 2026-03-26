@@ -2,9 +2,11 @@ from pypy.interpreter.mixedmodule import MixedModule
 from pypy.interpreter.error import OperationError
 from rpython.rlib.objectmodel import we_are_translated
 from rpython.rlib import rdynload
+from rpython.rlib.rarithmetic import target_long_bit as _target_long_bit
 import sys
 
 _WIN = sys.platform == 'win32'
+_TARGET_MAXINT = (1 << (_target_long_bit() - 1)) - 1
 
 class Module(MixedModule):
     """Sys Builtin Module. """
@@ -28,8 +30,8 @@ class Module(MixedModule):
         '__doc__'               : '(space.newtext("PyPy sys module"))',
 
         'platform'              : 'space.newtext(sys.platform)',
-        'maxint'                : 'space.newint(sys.maxint)',
-        'maxsize'               : 'space.newint(sys.maxint)',
+        'maxint'                : 'space.newint(%d)' % _TARGET_MAXINT,
+        'maxsize'               : 'space.newint(%d)' % _TARGET_MAXINT,
         'byteorder'             : 'space.newtext(sys.byteorder)',
         'maxunicode'            : 'space.newint(vm.MAXUNICODE)',
         'stdin'                 : 'state.getio(space).w_stdin',

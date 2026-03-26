@@ -521,6 +521,7 @@ class AbstractActionFlag(object):
                     mask = r_uint(1) << i
                     if self._fired_bitmask & mask:
                         action = self._nonperiodic_actions[i]
+                        assert isinstance(action, AsyncAction)
                         self._fired_bitmask  &= ~mask
                         action.perform(ec, frame)
                 # one of the actions with higher index re-triggered one of the
@@ -542,6 +543,9 @@ class ActionFlag(AbstractActionFlag):
 
     def reset_ticker(self, value):
         self._ticker = value
+
+    def rearm_ticker(self):
+        self._ticker = -1
 
     def decrement_ticker(self, by):
         value = self._ticker
