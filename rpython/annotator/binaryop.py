@@ -758,11 +758,22 @@ class __extend__(pairtype(SomeIterator, SomeIterator)):
 
 class __extend__(pairtype(SomeBuiltinMethod, SomeBuiltinMethod)):
     def union((bltn1, bltn2)):
-        if (bltn1.analyser != bltn2.analyser or
-                bltn1.methodname != bltn2.methodname):
+        if bltn1.methodname != bltn2.methodname:
             raise UnionError(bltn1, bltn2)
+        if bltn1.analyser != bltn2.analyser:
+            # Different analysers for the same method name can occur when
+            # s_self widens (e.g. SomeChar -> SomeString).  Use the
+            # analyser from the wider type.
+            if bltn1.s_self.contains(bltn2.s_self):
+                analyser = bltn1.analyser
+            elif bltn2.s_self.contains(bltn1.s_self):
+                analyser = bltn2.analyser
+            else:
+                raise UnionError(bltn1, bltn2)
+        else:
+            analyser = bltn1.analyser
         s_self = unionof(bltn1.s_self, bltn2.s_self)
-        return SomeBuiltinMethod(bltn1.analyser, s_self,
+        return SomeBuiltinMethod(analyser, s_self,
                 methodname=bltn1.methodname)
 
 @op.is_.register(SomePBC, SomePBC)
