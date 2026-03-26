@@ -1,9 +1,12 @@
 import sys
 from rpython.rtyper.lltypesystem import lltype, llmemory, llarena, rffi
-from rpython.rlib.rarithmetic import LONG_BIT, r_uint, maxint as MAXINT
+from rpython.rlib.rarithmetic import r_uint
+from rpython.rlib.rarithmetic import target_long_bit as _target_long_bit
 from rpython.rlib.objectmodel import we_are_translated
 from rpython.rlib.debug import ll_assert, fatalerror
 
+LONG_BIT = _target_long_bit()
+MAXINT = (1 << (LONG_BIT - 1)) - 1
 WORD = LONG_BIT // 8
 NULL = llmemory.NULL
 WORD_POWER_2 = {32: 2, 64: 3}[LONG_BIT]

@@ -69,8 +69,8 @@ from rpython.rtyper.lltypesystem.llmemory import raw_malloc_usage
 from rpython.memory.gc.base import GCBase, MovingGCBase
 from rpython.memory.gc import env
 from rpython.memory.support import mangle_hash
-from rpython.rlib.rarithmetic import ovfcheck, LONG_BIT, intmask, r_uint
-from rpython.rlib.rarithmetic import LONG_BIT_SHIFT, maxint as MAXINT
+from rpython.rlib.rarithmetic import ovfcheck, intmask, r_uint
+from rpython.rlib.rarithmetic import target_long_bit as _target_long_bit
 from rpython.rlib.debug import ll_assert, debug_print, debug_start, debug_stop
 from rpython.rlib.objectmodel import specialize, always_inline, we_are_translated
 from rpython.rlib import rgc, unroll
@@ -92,7 +92,10 @@ from rpython.memory.gc.minimarkpage import out_of_memory
 #    small).  Collected by regular mark-n-sweep during major collections.
 #
 
+LONG_BIT = _target_long_bit()
+LONG_BIT_SHIFT = {32: 5, 64: 6}[LONG_BIT]
 WORD = LONG_BIT // 8
+MAXINT = (1 << (LONG_BIT - 1)) - 1
 
 first_gcflag = 1 << (LONG_BIT//2)
 

@@ -2,7 +2,8 @@
 Utilities to get environ variables and platform-specific memory-related values.
 """
 import os, sys, platform
-from rpython.rlib.rarithmetic import r_uint, maxint as MAXINT
+from rpython.rlib.rarithmetic import r_uint
+from rpython.rlib.rarithmetic import target_long_bit as _target_long_bit
 from rpython.rlib.debug import debug_print, debug_start, debug_stop
 from rpython.rlib.rstring import assert_str0
 from rpython.rtyper.lltypesystem import lltype, rffi
@@ -56,8 +57,10 @@ def read_float_from_env(varname):
 # If unknown, it will just return the addressable size, which
 # will be huge on 64-bit systems.
 
+MAXINT = (1 << (_target_long_bit() - 1)) - 1
+
 def _get_addressable_size():
-    from rpython.rlib.rarithmetic import LONG_BIT
+    LONG_BIT = _target_long_bit()
     if LONG_BIT <= 32:
         if sys.platform.startswith('linux'):
             return float(2**32)     # 4GB
