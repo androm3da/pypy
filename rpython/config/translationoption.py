@@ -396,17 +396,72 @@ def set_opt_level(config, level):
 
 def set_platform(config):
     global IS_64_BITS
+    # Ensure rffi types are initialized from the HOST compiler before
+    # switching to a cross-compilation target platform.  rffi.setup()
+    # runs at import time, querying the current compiler for type sizes.
+    # By importing rffi here we guarantee it uses the host compiler,
+    # so that ll2ctypes (untranslated mode) works with native types and
+    # __int128_t support is detected from the host, not the target.
+    import rpython.rtyper.lltypesystem.rffi  # noqa: F401
     from rpython.translator.platform import set_platform
     set_platform(config.translation.platform, config.translation.cc)
     IS_64_BITS = _is_target_64_bits()
     if not IS_64_BITS:
         config.translation.suggest(gcremovetypeptr=False)
-    # Update rarithmetic constants for cross-compilation
-    from rpython.translator.platform import platform as target_platform
-    target_long_bit = getattr(target_platform, 'target_long_bit', None)
+    # Update llgroup's HALFSHIFT/HALFWORD for the target word size.
+    # llgroup was already imported (via rffi above) with host LONG_BIT,
+    # so we must patch it for cross-compilation targets.
+    from rpython.translator.platform import platform as _platform
+    target_long_bit = getattr(_platform, 'target_long_bit', None)
     if target_long_bit is not None:
-        from rpython.rlib.rarithmetic import _update_for_cross_compilation
-        _update_for_cross_compilation(target_long_bit)
+        from rpython.rtyper.lltypesystem.llgroup import _update_for_target_long_bit
+        _update_for_target_long_bit(target_long_bit)
+        # Fix rffi types that aliased Signed/Unsigned on the 64-bit host
+        # but must be distinct types on the cross-compilation target.
+        # E.g. time_t = 8 bytes on both host and target, but on the host
+        # it aliases Signed (= long = 8 bytes) while on a 32-bit target
+        # Signed = long = 4 bytes, so time_t needs its own C type.
+        from rpython.rtyper.lltypesystem.rffi import _update_types_for_cross_compilation
+        _update_types_for_cross_compilation(target_long_bit)
+        # Fix JIT optimizer's MAXINT/MININT/IS_64_BIT/LONG_BIT which are
+        # derived from the host's sys.maxint at import time.
+        from rpython.jit.metainterp.optimizeopt.intutils import (
+            _update_for_target_long_bit as _update_intutils)
+        _update_intutils(target_long_bit)
+        # Also update the auto-generated optimizer rules which have their
+        # own copies of MAXINT/MININT/LONG_BIT.
+        from rpython.jit.metainterp.optimizeopt.autogenintrules import (
+            _update_for_target_long_bit as _update_autogen)
+        _update_autogen()
+        # Update LONG_BIT in JIT codewriter helpers (int_abs, floordiv, mod)
+        from rpython.jit.codewriter.support import (
+            _update_long_bit as _update_codewriter)
+        _update_codewriter(target_long_bit)
+        # Fix uint_mul_high which dispatches on LONG_BIT to choose between
+        # r_ulonglong fast-path and manual digit-splitting.  On a 32-bit
+        # target we need the r_ulonglong path (32 < 64).
+        from rpython.rlib.rarithmetic import _update_uint_mul_high_bits
+        _update_uint_mul_high_bits(target_long_bit)
+        # Fix OVF_DIGITS in string_to_int which uses host maxint to skip
+        # overflow checking.  On 32-bit target, 10-digit numbers overflow.
+        from rpython.rlib.rarithmetic import _update_ovf_digits
+        _update_ovf_digits(target_long_bit)
+        # Fix rbigint digit sizes: SHIFT=63 (from 64-bit host with __int128)
+        # is too large for 32-bit target where Signed is only 32 bits.
+        # Reset to SHIFT=31 (native 32-bit configuration).
+        from rpython.rlib.rbigint import _update_rbigint_for_target
+        _update_rbigint_for_target(target_long_bit)
+        # Rebind SignedLongLong/UnsignedLongLong in rint.py to the new
+        # cross-compilation types so that llong helper functions use the
+        # correct 64-bit types at annotation time.
+        from rpython.rtyper.rint import (
+            _update_for_cross_compilation as _update_rint)
+        _update_rint()
+        # Rebind r_longlong/r_ulonglong and LONGLONG/ULONGLONG references
+        # in the JIT codewriter support module for cross-compilation.
+        from rpython.jit.codewriter.support import (
+            _update_for_cross_compilation as _update_support)
+        _update_support()
 
 def get_platform(config):
     from rpython.translator.platform import pick_platform
