@@ -96,6 +96,25 @@ while (1 << LONG_BIT_SHIFT) != LONG_BIT:
     LONG_BIT_SHIFT += 1
     assert LONG_BIT_SHIFT < 99, "LONG_BIT_SHIFT value not found?"
 
+def _get_target_long_bit():
+    """Return the target platform's LONG_BIT.  For cross-compilation this
+    may differ from the host LONG_BIT (e.g. 32 on Hexagon vs 64 on host).
+    Called lazily so the platform is already set."""
+    try:
+        from rpython.translator.platform import platform as _platform
+        target_long_bit = getattr(_platform, 'target_long_bit', None)
+        if target_long_bit is not None:
+            return target_long_bit
+    except ImportError:
+        pass
+    return LONG_BIT
+
+# Set after platform is configured, used by GC modules for flag layout.
+# This is intentionally a function so it can be called lazily after
+# set_platform() has run.
+def target_long_bit():
+    return _get_target_long_bit()
+
 LONGLONGLONG_BIT  = 128
 LONGLONGLONG_MASK = (2**LONGLONGLONG_BIT)-1
 LONGLONGLONG_TEST = 2**(LONGLONGLONG_BIT-1)
@@ -222,6 +241,22 @@ def compute_restype(self_type, other_type):
     if self_type is float or other_type is float:
         return float
     if self_type.SIGNED == other_type.SIGNED:
+        if self_type.BITS == other_type.BITS:
+            # Same size and signedness.  During cross-compilation, one type
+            # may be a force-created distinct type (e.g. r_ULONGLONG which
+            # maps to 'unsigned long long' on a 32-bit target) while the
+            # other is the cached host type (r_uint which maps to
+            # 'unsigned long' = 32-bit on target).  Prefer the non-cached
+            # (force-created) type to preserve cross-compilation semantics.
+            cached = _inttypes.get((self_type.SIGNED, self_type.BITS))
+            if cached is not None:
+                if cached is self_type and cached is not other_type:
+                    return other_type
+                if cached is other_type and cached is not self_type:
+                    return self_type
+            # Both are the same cached type, or neither is cached:
+            # canonicalize via build_int.
+            return build_int(None, self_type.SIGNED, self_type.BITS)
         return build_int(None, self_type.SIGNED, max(self_type.BITS, other_type.BITS))
     raise AssertionError("Merging these types (%s, %s) is not supported" % (self_type, other_type))
 
@@ -237,9 +272,10 @@ def normalizedinttype(t):
         return int
     if t.BITS <= r_int.BITS:
         return build_int(None, t.SIGNED, r_int.BITS)
-    else:
-        assert t.BITS <= r_longlong.BITS
+    elif t.BITS <= r_longlong.BITS:
         return build_int(None, t.SIGNED, r_longlong.BITS)
+    else:
+        return t  # 128-bit or wider types cannot be promoted further
 
 @specialize.argtype(0)
 def most_neg_value_of_same_type(x):
@@ -859,7 +895,17 @@ else:
 @specialize.memo()
 def check_support_int128():
     from rpython.rtyper.lltypesystem import rffi
-    return hasattr(rffi, '__INT128_T')
+    if not hasattr(rffi, '__INT128_T'):
+        return False
+    # For cross-compilation, the host may support __int128 but the target
+    # may not.  Check if the target compiler actually supports it.
+    try:
+        from rpython.translator.platform import platform as _platform
+        if hasattr(_platform, 'target_supports_int128'):
+            return _platform.target_supports_int128
+    except ImportError:
+        pass
+    return True
 
 def mulmod(a, b, c):
     """Computes (a * b) % c.
@@ -879,23 +925,38 @@ def mulmod(a, b, c):
         a = rbigint.fromint(a)
         return a.int_mul(b).int_mod(c).toint()
 
+# _UINT_MUL_HIGH_BITS: the effective LONG_BIT for uint_mul_high.
+# On native builds this equals LONG_BIT.  For cross-compilation (e.g.
+# 64-bit host to 32-bit target), translationoption.py patches this to
+# the target word size so that the r_ulonglong fast-path is taken.
+# We cannot modify LONG_BIT itself because that breaks is_valid_int()
+# and rbigint.py.
+_UINT_MUL_HIGH_BITS = LONG_BIT
+
+def _update_uint_mul_high_bits(target_long_bit):
+    global _UINT_MUL_HIGH_BITS
+    _UINT_MUL_HIGH_BITS = target_long_bit
+
 def uint_mul_high(a, b):
     """ Computes the high word of the unsigned multiplication a * b """
-    if LONG_BIT < LONGLONG_BIT:
+    if _UINT_MUL_HIGH_BITS < LONGLONG_BIT and r_ulonglong is not r_uint:
+        # Native 32-bit build: r_ulonglong is a distinct 64-bit type
         a = r_ulonglong(a)
         b = r_ulonglong(b)
-        return r_uint((a * b) >> LONG_BIT)
+        return r_uint((a * b) >> _UINT_MUL_HIGH_BITS)
     elif check_support_int128():
+        # 64-bit build (native or cross-compiling): use 128-bit int.
+        # On 64-bit host, r_ulonglong is r_uint so we must use the wider type.
         a = r_ulonglonglong(a)
         b = r_ulonglonglong(b)
-        return r_uint((a * b) >> LONG_BIT)
+        return r_uint((a * b) >> _UINT_MUL_HIGH_BITS)
     else:
         return _uint_mul_high(a, b)
 # can't use decorator due to recursive imports
 uint_mul_high.oopspec = "int.uint_mul_high(a, b)"
 
 def _uint_mul_high(a, b):
-    DIGIT = LONG_BIT / 2
+    DIGIT = _UINT_MUL_HIGH_BITS / 2
     MASK = (1 << DIGIT) - 1
 
     ah = a >> DIGIT
@@ -922,6 +983,13 @@ def _uint_mul_high(a, b):
 # ---------------------------
 
 OVF_DIGITS = len(str(maxint))
+
+def _update_ovf_digits(target_long_bit):
+    """Patch OVF_DIGITS for cross-compilation to a smaller word size."""
+    global OVF_DIGITS
+    if target_long_bit < LONG_BIT:
+        target_maxint = (1 << (target_long_bit - 1)) - 1
+        OVF_DIGITS = len(str(target_maxint))
 
 def string_to_int(s, base=10, allow_underscores=False, no_implicit_octal=False,
                   max_str_digits=0):
