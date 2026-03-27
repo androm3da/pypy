@@ -18,7 +18,17 @@ DEFL_GC = "incminimark"   # XXX
 
 DEFL_ROOTFINDER_WITHJIT = "shadowstack"
 
-IS_64_BITS = sys.maxint > 2147483647
+def _is_target_64_bits():
+    try:
+        from rpython.translator.platform import platform as compiler
+        target_long_bit = getattr(compiler, 'target_long_bit', None)
+        if target_long_bit is not None:
+            return target_long_bit > 32
+    except (ImportError, AttributeError):
+        pass
+    return sys.maxint > 2147483647
+
+IS_64_BITS = _is_target_64_bits()
 
 SUPPORT__THREAD = (    # whether the particular C compiler supports __thread
     sys.platform.startswith("linux") or     # Linux works
@@ -385,8 +395,18 @@ def set_opt_level(config, level):
 # ----------------------------------------------------------------
 
 def set_platform(config):
+    global IS_64_BITS
     from rpython.translator.platform import set_platform
     set_platform(config.translation.platform, config.translation.cc)
+    IS_64_BITS = _is_target_64_bits()
+    if not IS_64_BITS:
+        config.translation.suggest(gcremovetypeptr=False)
+    # Update rarithmetic constants for cross-compilation
+    from rpython.translator.platform import platform as target_platform
+    target_long_bit = getattr(target_platform, 'target_long_bit', None)
+    if target_long_bit is not None:
+        from rpython.rlib.rarithmetic import _update_for_cross_compilation
+        _update_for_cross_compilation(target_long_bit)
 
 def get_platform(config):
     from rpython.translator.platform import pick_platform
