@@ -355,6 +355,9 @@ def pick_platform(new_platform, cc):
     elif new_platform == 'arm':
         from rpython.translator.platform.arm import ARM
         return ARM(cc)
+    elif new_platform == 'hexagon':
+        from rpython.translator.platform.hexagon import Hexagon
+        return Hexagon(cc)
     else:
         raise ValueError("platform = %s" % (new_platform,))
 

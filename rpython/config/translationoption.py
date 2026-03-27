@@ -49,6 +49,7 @@ CACHE_DIR = os.path.realpath(os.path.join(MAINDIR, '_cache', MACHINE))
 PLATFORMS = [
     'host',
     'arm',
+    'hexagon',
 ]
 
 translation_optiondescription = OptionDescription(
@@ -131,7 +132,7 @@ translation_optiondescription = OptionDescription(
                          ("translation.gcrootfinder", DEFL_ROOTFINDER_WITHJIT),
                          ("translation.list_comprehension_operations", True)]),
     ChoiceOption("jit_backend", "choose the backend for the JIT",
-                 ["auto", "x86", "x86-without-sse2", 'arm'],
+                 ["auto", "x86", "x86-without-sse2", 'arm', 'hexagon'],
                  default="auto", cmdline="--jit-backend"),
     ChoiceOption("jit_profiler", "integrate profiler support into the JIT",
                  ["off", "oprofile"],
@@ -275,7 +276,9 @@ translation_optiondescription = OptionDescription(
                  "target platform", ['host'] + PLATFORMS, default='host',
                  cmdline='--platform',
                  suggests={"arm": [("translation.gcrootfinder", "shadowstack"),
-                                   ("translation.jit_backend", "arm")]}),
+                                   ("translation.jit_backend", "arm")],
+                           "hexagon": [("translation.gcrootfinder", "shadowstack"),
+                                       ("translation.jit_backend", "hexagon")]}),
 
     BoolOption("split_gc_address_space",
                "Ensure full separation of GC and non-GC pointers", default=False),
