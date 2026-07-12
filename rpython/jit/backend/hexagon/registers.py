@@ -82,6 +82,14 @@ caller_saved_registers = [
     r8, r9, r10, r11, r12, r13, r14, r15,
 ]
 
+# Allocatable registers that a C call does NOT preserve.  This is what
+# "callee_only" save/restore around calls must spill: the callee-saved
+# allocatable regs (R24, R25) survive the call by the ABI.
+caller_saved_allocatable = [
+    r0, r1, r2, r3, r4, r5, r6, r7,
+    r8, r9, r10, r11, r12, r13,
+]
+
 # Callee-saved registers (R16-R27 per ABI)
 callee_saved_registers = [
     r16, r17, r18, r19, r20, r21, r22, r23,

@@ -20,6 +20,10 @@ QEMU = os.environ.get(
     'HEXAGON_QEMU',
     os.path.join(TOOLCHAIN, 'bin', 'qemu-hexagon'))
 
+# Optional prefix (containing include/ and lib/) with extra cross-compiled
+# dependencies that the toolchain sysroot lacks, notably libffi.
+LIBFFI_PREFIX = os.environ.get('HEXAGON_LIBFFI')
+
 
 class Hexagon(Linux):
     name = "hexagon"
@@ -34,6 +38,9 @@ class Hexagon(Linux):
     available_includedirs = [
         os.path.join(SYSROOT, 'usr', 'include'),
     ]
+    if LIBFFI_PREFIX:
+        available_librarydirs.append(os.path.join(LIBFFI_PREFIX, 'lib'))
+        available_includedirs.append(os.path.join(LIBFFI_PREFIX, 'include'))
 
     cflags = tuple(
         ['-O3', '-pthread', '-mv73',

@@ -445,6 +445,11 @@ def set_platform(config):
         # target we need the r_ulonglong path (32 < 64).
         from rpython.rlib.rarithmetic import _update_uint_mul_high_bits
         _update_uint_mul_high_bits(target_long_bit)
+        # Fix the str.find/rfind/count bloom filter width, which must
+        # fit in the target's Signed.
+        from rpython.rlib.rstring import (
+            _update_for_target_long_bit as _update_rstring)
+        _update_rstring(target_long_bit)
         # Fix OVF_DIGITS in string_to_int which uses host maxint to skip
         # overflow checking.  On 32-bit target, 10-digit numbers overflow.
         from rpython.rlib.rarithmetic import _update_ovf_digits

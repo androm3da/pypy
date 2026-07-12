@@ -374,35 +374,96 @@ class Regalloc(BaseRegalloc, VectorRegallocMixin):
 
     # --- Integer binary operations ---
 
-    def _prepare_int_binary_op(self, op):
-        """Generic binary operation: res = op(arg0, arg1)."""
+    def _int_in_reg(self, var, forbidden_vars, temps):
+        """Location of *var*, guaranteed to be a core register.
+
+        Constants (make_sure_var_in_reg returns them as ImmLocation)
+        are loaded into a temporary register.  Temps are freed by the
+        caller once all operands are placed.
+        """
+        loc = self.make_sure_var_in_reg(var, forbidden_vars)
+        if not loc.is_core_reg():
+            tmp = TempInt()
+            reg = self.rm.force_allocate_reg(tmp, forbidden_vars)
+            self.assembler.regalloc_mov(loc, reg)
+            temps.append(tmp)
+            loc = reg
+        return loc
+
+    def _prepare_int_binary_imm_range(self, op, imm_lo, imm_hi):
+        """Binary operation: res = op(arg0, arg1).
+
+        The emitters only support an immediate in the *second* operand,
+        and only within the encoding range [imm_lo, imm_hi] of that
+        particular instruction; anything else must be a register.
+        """
+        from rpython.jit.metainterp.history import ConstInt
         boxes = op.getarglist()
         a0 = boxes[0]
         a1 = boxes[1]
-        l0 = self.make_sure_var_in_reg(a0, boxes)
-        if check_imm16(a1):
+        temps = []
+        l0 = self._int_in_reg(a0, boxes, temps)
+        if isinstance(a1, ConstInt) and imm_lo <= a1.getint() <= imm_hi:
             l1 = ImmLocation(a1.getint())
         else:
-            l1 = self.make_sure_var_in_reg(a1, boxes)
+            l1 = self._int_in_reg(a1, boxes, temps)
+        for tmp in temps:
+            self.rm.possibly_free_var(tmp)
         self.possibly_free_vars_for_op(op)
         res = self.force_allocate_reg(op)
         return [l0, l1, res]
 
+    def _prepare_int_binary_op(self, op):
+        # ADDI takes s16 (int_sub negates: -32768 handled by the emitter)
+        return self._prepare_int_binary_imm_range(op, -32768, 32767)
+
+    def _prepare_int_logic_op(self, op):
+        # ANDI/ORI immediates are s10
+        return self._prepare_int_binary_imm_range(op, -512, 511)
+
     def _prepare_int_binary_op_no_imm(self, op):
-        """Binary operation that doesn't support immediates."""
+        """Binary operation whose emitter needs both args in registers.
+
+        make_sure_var_in_reg returns an immediate location for Const
+        arguments, which must not reach a register-only emitter (the
+        constant would be encoded into a 5-bit register field).  Load
+        such constants into temporary registers here.  Both temps stay
+        allocated until both operands are placed, so the second load
+        cannot evict the first.  Emitters getting these arglocs must
+        write res only after all reads of l0/l1 (res may alias them).
+        """
         boxes = op.getarglist()
         a0 = boxes[0]
         a1 = boxes[1]
+        temps = []
         l0 = self.make_sure_var_in_reg(a0, boxes)
+        if not l0.is_core_reg():
+            tmp = TempInt()
+            reg = self.rm.force_allocate_reg(tmp, boxes)
+            self.assembler.regalloc_mov(l0, reg)
+            temps.append(tmp)
+            l0 = reg
         l1 = self.make_sure_var_in_reg(a1, boxes)
+        if not l1.is_core_reg():
+            tmp = TempInt()
+            reg = self.rm.force_allocate_reg(tmp, boxes)
+            self.assembler.regalloc_mov(l1, reg)
+            temps.append(tmp)
+            l1 = reg
+        for tmp in temps:
+            self.rm.possibly_free_var(tmp)
         self.possibly_free_vars_for_op(op)
         res = self.force_allocate_reg(op)
         return [l0, l1, res]
 
     def _prepare_int_unary_op(self, op):
-        """Unary operation: res = op(arg0)."""
+        """Unary operation: res = op(arg0).  The emitters are
+        register-only, so Const args go through a temp."""
         a0 = op.getarg(0)
-        l0 = self.make_sure_var_in_reg(a0)
+        temps = []
+        l0 = self._int_in_reg(a0, [a0], temps)
+        for tmp in temps:
+            self.rm.possibly_free_var(tmp)
         self.possibly_free_vars_for_op(op)
         res = self.force_allocate_reg(op)
         return [l0, res]
@@ -410,8 +471,9 @@ class Regalloc(BaseRegalloc, VectorRegallocMixin):
     prepare_op_int_add = _prepare_int_binary_op
     prepare_op_int_sub = _prepare_int_binary_op
     prepare_op_int_mul = _prepare_int_binary_op_no_imm
-    prepare_op_int_and = _prepare_int_binary_op
-    prepare_op_int_or = _prepare_int_binary_op
+    prepare_op_int_and = _prepare_int_logic_op
+    prepare_op_int_or = _prepare_int_logic_op
+    # int_xor's emitter loads any immediate through a scratch register
     prepare_op_int_xor = _prepare_int_binary_op
     prepare_op_int_lshift = _prepare_int_binary_op
     prepare_op_int_rshift = _prepare_int_binary_op
@@ -434,12 +496,26 @@ class Regalloc(BaseRegalloc, VectorRegallocMixin):
     # --- Integer comparisons ---
 
     def _prepare_int_cmp(self, op):
-        """Integer comparison: res = cmp(arg0, arg1)."""
+        """Integer comparison: res = cmp(arg0, arg1).
+
+        Immediates must fit every compare-immediate encoding the
+        emitter might pick after operand swapping: cmp.eqi/gti take
+        s10, cmp.gtui takes u9, so allow only [0, 511].  The emitter
+        loads an immediate in the *first* position through a scratch,
+        so only the second operand may stay an immediate.
+        """
+        from rpython.jit.metainterp.history import ConstInt
         boxes = op.getarglist()
         a0 = boxes[0]
         a1 = boxes[1]
-        l0 = self.make_sure_var_in_reg(a0, boxes)
-        l1 = self.make_sure_var_in_reg(a1, boxes)
+        temps = []
+        l0 = self._int_in_reg(a0, boxes, temps)
+        if isinstance(a1, ConstInt) and 0 <= a1.getint() <= 511:
+            l1 = ImmLocation(a1.getint())
+        else:
+            l1 = self._int_in_reg(a1, boxes, temps)
+        for tmp in temps:
+            self.rm.possibly_free_var(tmp)
         self.possibly_free_vars_for_op(op)
         res = self.force_allocate_reg(op)
         return [l0, l1, res]
@@ -462,12 +538,38 @@ class Regalloc(BaseRegalloc, VectorRegallocMixin):
 
     # --- Float operations ---
 
+    def _float_in_pair(self, var, forbidden_vars, temps):
+        """Location of *var*, guaranteed to be a register pair.
+
+        fprm.loc / make_sure_var_in_reg return a ConstFloatLoc for
+        constants (and possibly a stack slot for spilled variables);
+        the float emitters encode .value as a register-pair number, so
+        anything else must be loaded into a temporary pair first.  The
+        temp is appended to *temps*; the caller frees them only after
+        placing all operands so a second load cannot evict the first.
+        """
+        loc = self.fprm.make_sure_var_in_reg(var, forbidden_vars)
+        if not loc.is_reg_pair():
+            tmp = TempFloat()
+            reg = self.fprm.force_allocate_reg(tmp, forbidden_vars)
+            self.assembler.regalloc_mov(loc, reg)
+            temps.append(tmp)
+            loc = reg
+        return loc
+
+    def _free_float_temps(self, temps):
+        for tmp in temps:
+            self.fprm.possibly_free_var(tmp)
+
     def _prepare_float_binary_op(self, op):
         """Float binary operation: res = op(arg0, arg1)."""
-        a0 = op.getarg(0)
-        a1 = op.getarg(1)
-        l0 = self.fprm.loc(a0)
-        l1 = self.fprm.loc(a1)
+        boxes = op.getarglist()
+        a0 = boxes[0]
+        a1 = boxes[1]
+        temps = []
+        l0 = self._float_in_pair(a0, boxes, temps)
+        l1 = self._float_in_pair(a1, boxes, temps)
+        self._free_float_temps(temps)
         self.possibly_free_vars_for_op(op)
         res = self.fprm.force_allocate_reg(op)
         return [l0, l1, res]
@@ -475,25 +577,61 @@ class Regalloc(BaseRegalloc, VectorRegallocMixin):
     def _prepare_float_unary_op(self, op):
         """Float unary operation: res = op(arg0)."""
         a0 = op.getarg(0)
-        l0 = self.fprm.loc(a0)
+        temps = []
+        l0 = self._float_in_pair(a0, [a0], temps)
+        self._free_float_temps(temps)
         self.possibly_free_vars_for_op(op)
         res = self.fprm.force_allocate_reg(op)
         return [l0, res]
 
     prepare_op_float_add = _prepare_float_binary_op
     prepare_op_float_sub = _prepare_float_binary_op
-    prepare_op_float_mul = _prepare_float_binary_op
-    prepare_op_float_truediv = _prepare_float_binary_op
+    def prepare_op_float_mul(self, op):
+        """Like _prepare_float_binary_op, plus an extra temp pair for the
+        dfmpyfix'ed operand.  The temp is allocated first and freed only
+        after the result is placed, so it aliases neither the sources
+        nor the result."""
+        boxes = op.getarglist()
+        a0 = boxes[0]
+        a1 = boxes[1]
+        temps = []
+        tmp_box = TempFloat()
+        tmp = self.fprm.force_allocate_reg(tmp_box, boxes)
+        l0 = self._float_in_pair(a0, boxes, temps)
+        l1 = self._float_in_pair(a1, boxes, temps)
+        self._free_float_temps(temps)
+        self.possibly_free_vars_for_op(op)
+        res = self.fprm.force_allocate_reg(op)
+        self.fprm.possibly_free_var(tmp_box)
+        return [l0, l1, tmp, res]
+    def prepare_op_float_truediv(self, op):
+        """Like _prepare_float_binary_op, but the emitter calls
+        __hexagon_divdf3, so the caller-saved core registers must be
+        spilled first (the float pairs are callee-saved)."""
+        boxes = op.getarglist()
+        a0 = boxes[0]
+        a1 = boxes[1]
+        temps = []
+        l0 = self._float_in_pair(a0, boxes, temps)
+        l1 = self._float_in_pair(a1, boxes, temps)
+        self._free_float_temps(temps)
+        self.rm.before_call()
+        self.possibly_free_vars_for_op(op)
+        res = self.fprm.force_allocate_reg(op)
+        return [l0, l1, res]
     prepare_op_float_neg = _prepare_float_unary_op
     prepare_op_float_abs = _prepare_float_unary_op
 
     # --- Float comparisons ---
 
     def _prepare_float_cmp(self, op):
-        a0 = op.getarg(0)
-        a1 = op.getarg(1)
-        l0 = self.fprm.loc(a0)
-        l1 = self.fprm.loc(a1)
+        boxes = op.getarglist()
+        a0 = boxes[0]
+        a1 = boxes[1]
+        temps = []
+        l0 = self._float_in_pair(a0, boxes, temps)
+        l1 = self._float_in_pair(a1, boxes, temps)
+        self._free_float_temps(temps)
         self.possibly_free_vars_for_op(op)
         res = self.rm.force_allocate_reg(op)  # result is an int (0 or 1)
         return [l0, l1, res]
@@ -509,14 +647,22 @@ class Regalloc(BaseRegalloc, VectorRegallocMixin):
 
     def prepare_op_cast_float_to_int(self, op):
         a0 = op.getarg(0)
-        l0 = self.fprm.loc(a0)
+        temps = []
+        l0 = self._float_in_pair(a0, [a0], temps)
+        self._free_float_temps(temps)
         self.possibly_free_vars_for_op(op)
         res = self.rm.force_allocate_reg(op)
         return [l0, res]
 
     def prepare_op_cast_int_to_float(self, op):
+        # CONV_W2DF encodes l0.value as a register number, so the source
+        # must be a core register: a var still bound to its jitframe slot
+        # (e.g. an inputarg at loop entry) or a constant must be loaded.
         a0 = op.getarg(0)
-        l0 = self.rm.loc(a0)
+        temps = []
+        l0 = self._int_in_reg(a0, [a0], temps)
+        for tmp in temps:
+            self.rm.possibly_free_var(tmp)
         self.possibly_free_vars_for_op(op)
         res = self.fprm.force_allocate_reg(op)
         return [l0, res]
@@ -526,14 +672,18 @@ class Regalloc(BaseRegalloc, VectorRegallocMixin):
 
     def prepare_op_convert_float_bytes_to_longlong(self, op):
         a0 = op.getarg(0)
-        l0 = self.fprm.loc(a0)
+        temps = []
+        l0 = self._float_in_pair(a0, [a0], temps)
+        self._free_float_temps(temps)
         self.possibly_free_vars_for_op(op)
         res = self.fprm.force_allocate_reg(op)
         return [l0, res]
 
     def prepare_op_convert_longlong_bytes_to_float(self, op):
         a0 = op.getarg(0)
-        l0 = self.fprm.loc(a0)
+        temps = []
+        l0 = self._float_in_pair(a0, [a0], temps)
+        self._free_float_temps(temps)
         self.possibly_free_vars_for_op(op)
         res = self.fprm.force_allocate_reg(op)
         return [l0, res]
@@ -558,7 +708,10 @@ class Regalloc(BaseRegalloc, VectorRegallocMixin):
 
     def prepare_op_guard_true(self, op):
         a0 = op.getarg(0)
-        l0 = self.make_sure_var_in_reg(a0)
+        temps = []
+        l0 = self._int_in_reg(a0, [a0], temps)
+        for tmp in temps:
+            self.rm.possibly_free_var(tmp)
         return [l0] + self._prepare_guard_arglocs(op)
 
     prepare_op_guard_false = prepare_op_guard_true
@@ -566,11 +719,17 @@ class Regalloc(BaseRegalloc, VectorRegallocMixin):
     prepare_op_guard_isnull = prepare_op_guard_true
 
     def prepare_op_guard_value(self, op):
+        # CMP_EQ needs both operands in core registers; a1 is typically
+        # a Const (promote), which make_sure_var_in_reg leaves as an
+        # ImmLocation.
         boxes = op.getarglist()
         a0 = boxes[0]
         a1 = boxes[1]
-        l0 = self.make_sure_var_in_reg(a0, boxes)
-        l1 = self.make_sure_var_in_reg(a1, boxes)
+        temps = []
+        l0 = self._int_in_reg(a0, boxes, temps)
+        l1 = self._int_in_reg(a1, boxes, temps)
+        for tmp in temps:
+            self.rm.possibly_free_var(tmp)
         return [l0, l1] + self._prepare_guard_arglocs(op)
 
     def prepare_op_guard_class(self, op):
@@ -622,8 +781,13 @@ class Regalloc(BaseRegalloc, VectorRegallocMixin):
     prepare_op_guard_not_forced_2 = prepare_op_guard_not_forced
 
     def prepare_op_guard_exception(self, op):
+        # The expected class is (almost always) a Const; CMP_EQ needs it
+        # in a core register.
         a0 = op.getarg(0)
-        l0 = self.make_sure_var_in_reg(a0)
+        temps = []
+        l0 = self._int_in_reg(a0, [a0], temps)
+        for tmp in temps:
+            self.rm.possibly_free_var(tmp)
         res = self.force_allocate_reg(op)
         return [l0, res] + self._prepare_guard_arglocs(op)
 
@@ -661,11 +825,32 @@ class Regalloc(BaseRegalloc, VectorRegallocMixin):
     # strgetitem, strsetitem, etc. are all rewritten by the GC rewrite
     # pass into gc_load/gc_store variants before reaching the backend.
 
+    def _value_in_reg(self, var, forbidden_vars, temps):
+        """Location of *var* (any type), guaranteed to be a core register
+        or register pair.  Constants (ImmLocation / ConstFloatLoc) are
+        loaded into temporaries; the caller frees *temps* only after
+        placing all operands."""
+        if var.type == FLOAT:
+            return self._float_in_pair(var, forbidden_vars, temps)
+        return self._int_in_reg(var, forbidden_vars, temps)
+
+    def _free_temps(self, temps):
+        for tmp in temps:
+            if tmp.type == FLOAT:
+                self.fprm.possibly_free_var(tmp)
+            else:
+                self.rm.possibly_free_var(tmp)
+
     def prepare_op_gc_store(self, op):
-        base_loc = self.rm.make_sure_var_in_reg(op.getarg(0), op.getarglist())
-        ofs = op.getarg(1).getint()
-        value_loc = self.make_sure_var_in_reg(op.getarg(2), op.getarglist())
-        size = op.getarg(3).getint()
+        # STW/STD & co. encode the value as a register (pair), so Const
+        # values (common: setfield_gc(p, 1)) must be materialized.
+        boxes = op.getarglist()
+        temps = []
+        base_loc = self._int_in_reg(boxes[0], boxes, temps)
+        ofs = boxes[1].getint()
+        value_loc = self._value_in_reg(boxes[2], boxes, temps)
+        size = boxes[3].getint()
+        self._free_temps(temps)
         ofs_loc = ImmLocation(ofs)
         return [value_loc, base_loc, ofs_loc, ImmLocation(size)]
 
@@ -673,7 +858,10 @@ class Regalloc(BaseRegalloc, VectorRegallocMixin):
         a0 = op.getarg(0)
         ofs = op.getarg(1).getint()
         nsize = op.getarg(2).getint()
-        base_loc = self.rm.make_sure_var_in_reg(a0)
+        temps = []
+        base_loc = self._int_in_reg(a0, [a0], temps)
+        for tmp in temps:
+            self.rm.possibly_free_var(tmp)
         ofs_loc = ImmLocation(ofs)
         self.possibly_free_vars_for_op(op)
         if abs(nsize) <= 4:
@@ -688,10 +876,14 @@ class Regalloc(BaseRegalloc, VectorRegallocMixin):
 
     def prepare_op_gc_store_indexed(self, op):
         # args: base, index, value, scale, ofs, size
+        # All three of base/index/value must be in registers (Const
+        # values are common; see prepare_op_gc_store).
         boxes = op.getarglist()
-        base_loc = self.rm.make_sure_var_in_reg(boxes[0], boxes)
-        index_loc = self.rm.make_sure_var_in_reg(boxes[1], boxes)
-        value_loc = self.rm.make_sure_var_in_reg(boxes[2], boxes)
+        temps = []
+        base_loc = self._int_in_reg(boxes[0], boxes, temps)
+        index_loc = self._int_in_reg(boxes[1], boxes, temps)
+        value_loc = self._value_in_reg(boxes[2], boxes, temps)
+        self._free_temps(temps)
         assert boxes[3].getint() == 1  # scale must be 1
         ofs_loc = ImmLocation(boxes[4].getint())
         size_loc = ImmLocation(boxes[5].getint())
@@ -700,8 +892,11 @@ class Regalloc(BaseRegalloc, VectorRegallocMixin):
     def _prepare_op_gc_load_indexed(self, op):
         # args: base, index, scale, offset, nsize
         boxes = op.getarglist()
-        base_loc = self.rm.make_sure_var_in_reg(boxes[0], boxes)
-        index_loc = self.rm.make_sure_var_in_reg(boxes[1], boxes)
+        temps = []
+        base_loc = self._int_in_reg(boxes[0], boxes, temps)
+        index_loc = self._int_in_reg(boxes[1], boxes, temps)
+        for tmp in temps:
+            self.rm.possibly_free_var(tmp)
         assert boxes[2].getint() == 1  # scale must be 1
         ofs_loc = ImmLocation(boxes[3].getint())
         nsize = boxes[4].getint()
@@ -719,29 +914,19 @@ class Regalloc(BaseRegalloc, VectorRegallocMixin):
     # --- Write barrier ---
 
     def prepare_op_cond_call_gc_wb(self, op):
-        N = op.numargs()
+        # All args must be in registers: the fastpath reads the object
+        # header via LDUB, and args can be Consts (e.g. a prebuilt
+        # object).  Temps are freed only after all args are placed so a
+        # later load cannot reuse an earlier temp's register.
         args = op.getarglist()
-        arglocs = [self.rm.make_sure_var_in_reg(op.getarg(i), args)
-                    for i in range(N)]
+        temps = []
+        arglocs = [self._int_in_reg(op.getarg(i), args, temps)
+                   for i in range(op.numargs())]
+        for tmp in temps:
+            self.rm.possibly_free_var(tmp)
         return arglocs
 
-    def prepare_op_cond_call_gc_wb_array(self, op):
-        # For array write barrier, all args (including the index) must be
-        # in registers because the card marking code mutates them.
-        args = op.getarglist()
-        arglocs = []
-        for i in range(op.numargs()):
-            arg = op.getarg(i)
-            loc = self.rm.make_sure_var_in_reg(arg, args)
-            if not loc.is_core_reg():
-                # Constant: load into a temp register
-                tmp = TempInt()
-                reg = self.rm.force_allocate_reg(tmp)
-                self.assembler.regalloc_mov(loc, reg)
-                self.rm.possibly_free_var(tmp)
-                loc = reg
-            arglocs.append(loc)
-        return arglocs
+    prepare_op_cond_call_gc_wb_array = prepare_op_cond_call_gc_wb
 
     # --- Nursery allocation ---
 
@@ -753,7 +938,10 @@ class Regalloc(BaseRegalloc, VectorRegallocMixin):
 
     def prepare_op_call_malloc_nursery_varsize_frame(self, op):
         a0 = op.getarg(0)
-        size_loc = self.make_sure_var_in_reg(a0)
+        temps = []
+        size_loc = self._int_in_reg(a0, [a0], temps)
+        for tmp in temps:
+            self.rm.possibly_free_var(tmp)
         self.possibly_free_vars_for_op(op)
         self.rm.force_allocate_reg(op, selected_reg=r.r0)
         t = TempInt()
@@ -761,12 +949,19 @@ class Regalloc(BaseRegalloc, VectorRegallocMixin):
         return [size_loc]
 
     def prepare_op_call_malloc_nursery_varsize(self, op):
-        a0 = op.getarg(0)  # length
-        length_loc = self.make_sure_var_in_reg(a0)
+        a0 = op.getarg(2)  # length
+        temps = []
+        length_loc = self._int_in_reg(a0, [a0], temps)
+        for tmp in temps:
+            self.rm.possibly_free_var(tmp)
         self.possibly_free_vars_for_op(op)
+        # r0/r1/r2 are clobbered by the emitter (fastpath result and
+        # slowpath stub arguments), so nothing live may stay in them
         self.rm.force_allocate_reg(op, selected_reg=r.r0)
         t = TempInt()
         self.rm.force_allocate_reg(t, selected_reg=r.r1)
+        t2 = TempInt()
+        self.rm.force_allocate_reg(t2, selected_reg=r.r2)
         return [length_loc]
 
     # --- Exception handling ---
@@ -778,9 +973,14 @@ class Regalloc(BaseRegalloc, VectorRegallocMixin):
     prepare_op_save_exc_class = prepare_op_save_exception
 
     def prepare_op_restore_exception(self, op):
+        # Both args (often Consts: exception class / prebuilt instance)
+        # are stored with STW and must be in core registers.
         boxes = op.getarglist()
-        exc_tp_loc = self.rm.make_sure_var_in_reg(boxes[0], boxes)
-        exc_val_loc = self.rm.make_sure_var_in_reg(boxes[1], boxes)
+        temps = []
+        exc_tp_loc = self._int_in_reg(boxes[0], boxes, temps)
+        exc_val_loc = self._int_in_reg(boxes[1], boxes, temps)
+        for tmp in temps:
+            self.rm.possibly_free_var(tmp)
         return [exc_tp_loc, exc_val_loc]
 
     # --- Force token and memory error check ---
@@ -802,7 +1002,33 @@ class Regalloc(BaseRegalloc, VectorRegallocMixin):
     # --- Array operations ---
 
     def prepare_op_zero_array(self, op):
-        return []
+        from rpython.jit.metainterp.history import ConstInt
+        boxes = op.getarglist()
+        base, start, size, scale_start, scale_size = boxes
+        assert isinstance(scale_start, ConstInt) and scale_start.getint() == 1
+        assert isinstance(scale_size, ConstInt) and scale_size.getint() == 1
+        if isinstance(size, ConstInt) and size.getint() == 0:
+            return []
+        temps = []
+        base_loc = self._int_in_reg(base, boxes, temps)
+        if isinstance(start, ConstInt):
+            start_loc = ImmLocation(start.getint())
+        else:
+            start_loc = self._int_in_reg(start, boxes, temps)
+        if isinstance(size, ConstInt):
+            size_loc = ImmLocation(size.getint())
+            use_memset = size.getint() > 32
+        else:
+            size_loc = self._int_in_reg(size, boxes, temps)
+            use_memset = True
+        for tmp in temps:
+            self.rm.possibly_free_var(tmp)
+        if use_memset:
+            # the emitter calls memset(): caller-saved core regs die
+            # (reading base/start/size from their old regs afterwards is
+            # still fine, before_call only stores them to the frame)
+            self.rm.before_call()
+        return [base_loc, start_loc, size_loc]
 
     # --- Debug and portal frames ---
 
@@ -819,8 +1045,12 @@ class Regalloc(BaseRegalloc, VectorRegallocMixin):
         return []
 
     def prepare_op_increment_debug_counter(self, op):
+        # The counter address is a ConstInt; LDW/STW need it in a register.
         a0 = op.getarg(0)
-        base_loc = self.rm.make_sure_var_in_reg(a0)
+        temps = []
+        base_loc = self._int_in_reg(a0, [a0], temps)
+        for tmp in temps:
+            self.rm.possibly_free_var(tmp)
         return [base_loc]
 
     # --- Jump / Finish / Label ---
@@ -902,8 +1132,12 @@ class Regalloc(BaseRegalloc, VectorRegallocMixin):
     prepare_op_cast_int_to_ptr = prepare_op_same_as_i
 
     def prepare_op_same_as_f(self, op):
+        # The emitter moves a register pair, so the source must be one
+        # (fprm.loc could return a stack slot or a ConstFloatLoc).
         a0 = op.getarg(0)
-        l0 = self.fprm.loc(a0)
+        temps = []
+        l0 = self._float_in_pair(a0, [a0], temps)
+        self._free_float_temps(temps)
         self.possibly_free_vars_for_op(op)
         res = self.fprm.force_allocate_reg(op)
         return [l0, res]
@@ -946,6 +1180,11 @@ class Regalloc(BaseRegalloc, VectorRegallocMixin):
                 self.rm.before_call(save_all_regs=2)
             else:
                 self.rm.before_call()
+        else:
+            # even if the call cannot collect, the C callee still
+            # clobbers the caller-saved registers
+            self.fprm.before_call()
+            self.rm.before_call()
         self.possibly_free_vars_for_op(op)
         if op.type == FLOAT:
             resloc = self.fprm.after_call(op)

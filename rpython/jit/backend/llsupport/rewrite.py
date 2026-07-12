@@ -673,12 +673,15 @@ class GcRewriterAssembler(object):
         index_list = loop_token.compiled_loop_token._ll_initial_locs
         for i, arg in enumerate(arglist):
             descr = self.cpu.getarraydescr_for_frame(arg.type)
-            assert self.cpu.JITFRAME_FIXED_SIZE & 1 == 0
             _, itemsize, _ = self.cpu.unpack_arraydescr_size(descr)
             array_offset = index_list[i]   # index, already measured in bytes
             # emit GC_STORE
             _, basesize, _ = unpack_arraydescr(descr)
             offset = basesize + array_offset
+            # the slot must be aligned for its type (some backends, e.g.
+            # hexagon, have an *odd* JITFRAME_FIXED_SIZE precisely so that
+            # this works out with their frame base offset)
+            assert offset % itemsize == 0
             args = [frame, ConstInt(offset), arg, ConstInt(itemsize)]
             self.emit_op(ResOperation(rop.GC_STORE, args))
 

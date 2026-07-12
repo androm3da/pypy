@@ -26,15 +26,10 @@ class ResOpAssembler(BaseAssembler):
     # -------------------------------------------------------------------
 
     def emit_op_int_add(self, op, arglocs):
-        from rpython.rlib.debug import debug_print
         l0, l1, res = arglocs
         if l1.is_imm():
-            debug_print("HEXDBG ADDI rd=", res.value, " rs=", l0.value,
-                        " imm=", l1.value)
             self.mc.ADDI(res.value, l0.value, l1.value)
         else:
-            debug_print("HEXDBG ADD rd=", res.value, " rs=", l0.value,
-                        " rt=", l1.value)
             self.mc.ADD(res.value, l0.value, l1.value)
 
     emit_op_nursery_ptr_increment = emit_op_int_add
@@ -233,30 +228,12 @@ class ResOpAssembler(BaseAssembler):
 
     def emit_op_uint_mul_high(self, op, arglocs):
         l0, l1, res = arglocs
-        # Hexagon: 32x32->64 unsigned multiply, take high word
-        # Use M2_DPMPYUU_S0 if available, or signed multiply + correction
-        # For now, use signed 32x32->64 multiply and fix the sign
+        # Unsigned 32x32->64 multiply into the scratch pair, take the
+        # high word.  res is written last, so it may alias l0/l1.
         d14_even = r.d14.value
         d14_odd = d14_even + 1
-        self.mc.M2_DPMPYSS_S0(d14_even, l0.value, l1.value)
-        # For unsigned high: high_signed + l0*(l1<0?1:0) + l1*(l0<0?1:0)
-        # Simplified: just use the signed high word and add corrections
-        # Actually for unsigned multiply we need:
-        #   hi_u = hi_s + (a<0?b:0) + (b<0?a:0)
-        s1 = r.scratch1.value
-        s2 = r.scratch2.value
-        self.mc.MV(res.value, d14_odd)  # signed high word
-        pd = r.scratch_pred.value
-        # Correction for unsigned: if l0 < 0, add l1 to high word
-        self.mc.CMP_GTI(pd, l0.value, -1)  # P0=1 if l0 >= 0
-        self.mc.gen_load_int(s1, 0)
-        self.mc.MUX(s1, pd, s1, l1.value)  # s1 = l0<0 ? l1 : 0
-        self.mc.ADD(res.value, res.value, s1)
-        # if l1 < 0, add l0 to high word
-        self.mc.CMP_GTI(pd, l1.value, -1)
-        self.mc.gen_load_int(s1, 0)
-        self.mc.MUX(s1, pd, s1, l0.value)
-        self.mc.ADD(res.value, res.value, s1)
+        self.mc.M2_DPMPYUU_S0(d14_even, l0.value, l1.value)
+        self.mc.MV(res.value, d14_odd)
 
     def emit_op_int_force_ge_zero(self, op, arglocs):
         l0, res = arglocs
@@ -278,8 +255,8 @@ class ResOpAssembler(BaseAssembler):
         self.mc.DFSUB(res.value, l0.value, l1.value)
 
     def emit_op_float_mul(self, op, arglocs):
-        l0, l1, res = arglocs
-        self.mc.DFMUL(res.value, l0.value, l1.value)
+        l0, l1, tmp, res = arglocs
+        self.mc.DFMUL(res.value, l0.value, l1.value, tmp.value)
 
     def emit_op_float_truediv(self, op, arglocs):
         l0, l1, res = arglocs
@@ -704,12 +681,16 @@ class ResOpAssembler(BaseAssembler):
     def emit_op_call_malloc_nursery_varsize(self, op, arglocs):
         gc_ll_descr = self.cpu.gc_ll_descr
         length_loc = arglocs[0]
-        # Get the item size and GC type ID from the descr
+        # Get the kind, item size and GC type ID from the op
         arraydescr = op.getdescr()
+        kind = op.getarg(0).getint()
         itemsize = op.getarg(1).getint()
         maxlength = (gc_ll_descr.max_size_of_young_obj - WORD * 2) // itemsize
-        gcmap = self._regalloc.get_gcmap([r.r0, r.r1])
+        # r2 is clobbered by the slowpath argument setup (reserved in
+        # prepare), so refs must not be tracked there either
+        gcmap = self._regalloc.get_gcmap([r.r0, r.r1, r.r2])
         self.malloc_cond_varsize(
+            kind,
             gc_ll_descr.get_nursery_free_addr(),
             gc_ll_descr.get_nursery_top_addr(),
             length_loc, gcmap, arraydescr, itemsize, maxlength)
@@ -740,14 +721,16 @@ class ResOpAssembler(BaseAssembler):
         jmp_pos = mc.get_relative_pos()
         mc.TRAP0(0xDE)  # placeholder: if (!P0) jump past (allocation ok)
 
-        # Slow path: call malloc_slowpath
+        # Slow path: call the malloc_slowpath *stub* (never the raw GC
+        # function: the stub saves/restores all registers to the
+        # jitframe, checks for failure, reloads the possibly-moved
+        # frame, and returns R0 = result, R1 = up-to-date nursery_free
+        # -- which the store below relies on).  Stub entry convention:
+        # R0 = nursery_free, R1 = nursery_free + size (already set).
         gcmap = self._regalloc.get_gcmap([r.r0, r.r1])
         self.push_gcmap(mc, gcmap)
-        mc.gen_load_int(r.scratch1.value, size)
-        mc.MV(r.r0.value, r.scratch1.value)
-        mc.gen_load_int(r.scratch1.value, self.cpu.gc_ll_descr.get_malloc_slowpath_addr())
+        mc.gen_load_int(r.scratch1.value, self.malloc_slowpath)
         mc.CALLR(r.scratch1.value)
-        self._reload_frame_if_necessary(mc)
         self.pop_gcmap(mc)
 
         # Update nursery_free = r1
@@ -777,13 +760,13 @@ class ResOpAssembler(BaseAssembler):
         jmp_pos = mc.get_relative_pos()
         mc.TRAP0(0xDE)  # placeholder
 
-        # Slow path
+        # Slow path: via the register-saving stub, like malloc_cond
+        # (R0 = nursery_free, R1 = nursery_free + size already set;
+        # the stub returns R1 = up-to-date nursery_free)
         gcmap = self._regalloc.get_gcmap([r.r0, r.r1])
         self.push_gcmap(mc, gcmap)
-        mc.MV(r.r0.value, size_loc.value)
-        mc.gen_load_int(r.scratch1.value, self.cpu.gc_ll_descr.get_malloc_slowpath_addr())
+        mc.gen_load_int(r.scratch1.value, self.malloc_slowpath)
         mc.CALLR(r.scratch1.value)
-        self._reload_frame_if_necessary(mc)
         self.pop_gcmap(mc)
 
         end_pos = mc.get_relative_pos()
@@ -794,9 +777,12 @@ class ResOpAssembler(BaseAssembler):
         pmc = OverwritingBuilder(mc, jmp_pos, INST_SIZE)
         pmc.J_IF_FALSE(pd, offset)
 
-    def malloc_cond_varsize(self, nursery_free_adr, nursery_top_adr,
+    def malloc_cond_varsize(self, kind, nursery_free_adr, nursery_top_adr,
                             length_loc, gcmap, arraydescr, itemsize,
                             maxlength):
+        from rpython.jit.backend.llsupport import rewrite
+        from rpython.jit.backend.llsupport.descr import ArrayDescr
+        assert isinstance(arraydescr, ArrayDescr)
         mc = self.mc
         pd = r.scratch_pred.value
         # Check if length > maxlength (needs slow path)
@@ -806,8 +792,7 @@ class ResOpAssembler(BaseAssembler):
         mc.TRAP0(0xDE)  # placeholder: if (P0) jump slow_path
 
         # Fast path: try nursery allocation
-        # total_size = base_size + length * itemsize
-        # For simplicity, compute total_size = length * itemsize + WORD*2
+        # total_size = basesize + length * itemsize, aligned
         if itemsize == 1:
             mc.MV(r.scratch2.value, length_loc.value)
         elif itemsize == 2:
@@ -819,8 +804,9 @@ class ResOpAssembler(BaseAssembler):
         else:
             mc.gen_load_int(r.scratch1.value, itemsize)
             mc.MPYI(r.scratch2.value, length_loc.value, r.scratch1.value)
-        # Add header size (2 words)
-        mc.ADDI(r.scratch2.value, r.scratch2.value, WORD * 2)
+        # Add the header size (basesize differs per kind: e.g. strings
+        # also have a hash field before the length)
+        mc.ADDI(r.scratch2.value, r.scratch2.value, arraydescr.basesize)
         # Align to WORD
         mc.ADDI(r.scratch2.value, r.scratch2.value, WORD - 1)
         mc.gen_load_int(r.scratch1.value, ~(WORD - 1))
@@ -854,12 +840,25 @@ class ResOpAssembler(BaseAssembler):
         pmc.J_IF_TRUE(pd, offset)
 
         self.push_gcmap(mc, gcmap)
-        # Call malloc_slowpath with size
-        mc.MV(r.r0.value, r.scratch2.value)
-        mc.gen_load_int(r.scratch1.value,
-                        self.cpu.gc_ll_descr.get_malloc_slowpath_addr())
+        # Call the register-saving slowpath stub for the right kind
+        if kind == rewrite.FLAG_ARRAY:
+            # var stub convention: R0 = itemsize, R1 = tid, R2 = length
+            if length_loc.value != r.r2.value:
+                mc.MV(r.r2.value, length_loc.value)
+            mc.gen_load_int(r.r1.value, arraydescr.tid)
+            mc.gen_load_int(r.r0.value, itemsize)
+            addr = self.malloc_slowpath_varsize
+        else:
+            # str/unicode stub convention: R0 = length
+            if length_loc.value != r.r0.value:
+                mc.MV(r.r0.value, length_loc.value)
+            if kind == rewrite.FLAG_STR:
+                addr = self.malloc_slowpath_str
+            else:
+                assert kind == rewrite.FLAG_UNICODE
+                addr = self.malloc_slowpath_unicode
+        mc.gen_load_int(r.scratch1.value, addr)
         mc.CALLR(r.scratch1.value)
-        self._reload_frame_if_necessary(mc)
         self.pop_gcmap(mc)
 
         end_pos = mc.get_relative_pos()
@@ -1415,48 +1414,35 @@ class ResOpAssembler(BaseAssembler):
     # -------------------------------------------------------------------
 
     def emit_op_zero_array(self, op, arglocs):
-        from rpython.jit.metainterp.history import ConstInt
-        boxes = op.getarglist()
-        base, start, size, scale_start, scale_size = boxes
-        assert isinstance(scale_start, ConstInt) and scale_start.getint() == 1
-        assert isinstance(scale_size, ConstInt) and scale_size.getint() == 1
-        if isinstance(size, ConstInt) and size.getint() == 0:
+        if not arglocs:
             return
-        base_loc = self._regalloc.rm.make_sure_var_in_reg(base, boxes)
-        if isinstance(start, ConstInt):
-            const_start = start.getint()
-            start_loc = None
-        else:
-            start_loc = self._regalloc.rm.make_sure_var_in_reg(start, boxes)
-            const_start = -1
+        base_loc, start_loc, size_loc = arglocs
         from rpython.jit.backend.llsupport.descr import unpack_arraydescr
         item_size, base_ofs, _ = unpack_arraydescr(op.getdescr())
         # Compute destination address
         dstaddr = r.scratch1.value
-        if const_start >= 0:
-            ofs = base_ofs + const_start
+        if start_loc.is_imm():
+            ofs = base_ofs + start_loc.value
             self.mc.ADDI(dstaddr, base_loc.value, ofs)
         else:
             self.mc.ADD(dstaddr, base_loc.value, start_loc.value)
             self.mc.ADDI(dstaddr, dstaddr, base_ofs)
         # Zero out the memory
-        if isinstance(size, ConstInt):
-            total = size.getint()
+        if size_loc.is_imm():
+            total = size_loc.value
             if total <= 32:
                 # Inline zero with store instructions
+                self.mc.gen_load_int(r.scratch2.value, 0)
                 dst_i = 0
                 while total >= 4:
-                    self.mc.gen_load_int(r.scratch2.value, 0)
                     self.mc.STW(dstaddr, r.scratch2.value, dst_i)
                     dst_i += 4
                     total -= 4
                 while total >= 2:
-                    self.mc.gen_load_int(r.scratch2.value, 0)
                     self.mc.STH(dstaddr, r.scratch2.value, dst_i)
                     dst_i += 2
                     total -= 2
                 while total >= 1:
-                    self.mc.gen_load_int(r.scratch2.value, 0)
                     self.mc.STB(dstaddr, r.scratch2.value, dst_i)
                     dst_i += 1
                     total -= 1
@@ -1465,12 +1451,14 @@ class ResOpAssembler(BaseAssembler):
                 self.mc.gen_load_int(r.scratch2.value, total)
                 size_reg = r.scratch2.value
         else:
-            size_loc = self._regalloc.rm.make_sure_var_in_reg(size, boxes)
             size_reg = size_loc.value
-        # Call memset(dst, 0, size) for large arrays
-        self.mc.MV(r.r0.value, dstaddr)
+        # Call memset(dst, 0, size) for large arrays (the regalloc
+        # spilled caller-saved regs in prepare_op_zero_array).
+        # Set R2 first: size_reg may be R0/R1; dstaddr is scratch1.
+        if size_reg != r.r2.value:
+            self.mc.MV(r.r2.value, size_reg)
         self.mc.gen_load_int(r.r1.value, 0)
-        self.mc.MV(r.r2.value, size_reg)
+        self.mc.MV(r.r0.value, dstaddr)
         self.mc.gen_load_int(r.scratch1.value, self.memset_addr)
         self.mc.CALLR(r.scratch1.value)
 
@@ -1525,6 +1513,23 @@ class ResOpAssembler(BaseAssembler):
                 self.mc.store_to_jitframe(loc.value, base_ofs)
             elif loc.is_reg_pair():
                 self.mc.store_pair_to_jitframe(loc.value, base_ofs)
+            elif loc.is_imm():
+                self.mc.gen_load_int(r.scratch1.value, loc.value)
+                self.mc.store_to_jitframe(r.scratch1.value, base_ofs)
+            elif loc.is_imm_float():
+                # loc.addr points to the 8-byte constant
+                self.mc.gen_load_int(r.scratch1.value, loc.addr)
+                self.mc.load_double(r.d14.value, r.scratch1.value, 0)
+                self.mc.store_pair_to_jitframe(r.d14.value, base_ofs)
+            elif loc.is_stack():
+                if loc.is_float():
+                    self.mc.load_pair_from_jitframe(r.d14.value, loc.value)
+                    self.mc.store_pair_to_jitframe(r.d14.value, base_ofs)
+                else:
+                    self.mc.load_from_jitframe(r.scratch1.value, loc.value)
+                    self.mc.store_to_jitframe(r.scratch1.value, base_ofs)
+            else:
+                raise AssertionError("emit_op_finish: unsupported loc")
 
         # Store descr via GC ref table
         faildescrindex = self.get_gcref_from_faildescr(op.getdescr())

@@ -470,6 +470,15 @@ SEARCH_COUNT = 0
 SEARCH_FIND = 1
 SEARCH_RFIND = 2
 
+def _update_for_target_long_bit(target_long_bit):
+    """For cross-compilation: the bloom mask lives in a Signed, so
+    BLOOM_WIDTH must match the *target* word size, not the translation
+    host's (1 << (c & 63) is undefined for a 32-bit Signed and makes
+    str.find skip over valid matches).  Called from
+    set_platform_and_check()."""
+    global BLOOM_WIDTH
+    BLOOM_WIDTH = target_long_bit
+
 @specialize.ll()
 def bloom_add(mask, c):
     return mask | (1 << (ord(c) & (BLOOM_WIDTH - 1)))

@@ -18,6 +18,40 @@ from rpython.jit.backend.hexagon.instruction_builder import gen_all_instr_assemb
 from rpython.jit.backend.hexagon.vector_ext import HVXInstructionMixin
 from rpython.rlib.objectmodel import we_are_translated
 from rpython.rlib.rarithmetic import intmask
+from rpython.rtyper.lltypesystem import lltype, rffi
+from rpython.translator.tool.cbuild import ExternalCompilationInfo
+
+# Instruction-cache flush.  The 22.1.8 compiler-rt __clear_cache aborts on
+# hexagon, so provide our own: clean+invalidate D-cache lines (pushes the
+# freshly written code to memory), invalidate the I-cache lines, then isync.
+# Harmless no-op when compiled for a non-hexagon host (untranslated tests).
+_flush_eci = ExternalCompilationInfo(
+    post_include_bits=['''
+void pypy_hexagon_flush_icache(long start, long size);
+'''],
+    separate_module_sources=['''
+void pypy_hexagon_flush_icache(long start, long size)
+{
+#ifdef __hexagon__
+    unsigned long line = 32;
+    unsigned long p = (unsigned long)start & ~(line - 1);
+    unsigned long end = (unsigned long)start + (unsigned long)size;
+    unsigned long a;
+    for (a = p; a < end; a += line)
+        __asm__ volatile("dccleaninva(%0)" : : "r"(a));
+    __asm__ volatile("barrier" : : : "memory");
+    for (a = p; a < end; a += line)
+        __asm__ volatile("icinva(%0)" : : "r"(a));
+    __asm__ volatile("isync");
+#endif
+}
+'''])
+
+flush_icache = rffi.llexternal(
+    "pypy_hexagon_flush_icache",
+    [lltype.Signed, lltype.Signed], lltype.Void,
+    compilation_info=_flush_eci,
+    _nowrapper=True, sandboxsafe=True)
 
 
 class AbstractHexagonBuilder(HVXInstructionMixin):
@@ -68,23 +102,34 @@ class AbstractHexagonBuilder(HVXInstructionMixin):
         """Zero-extend byte: Rd = zxtb(Rs) = and(Rs, #0xFF)."""
         self.ANDI(rd, rs, 0xFF)
 
-    def DFMUL(self, rdd, rss, rtt):
+    def DFMUL(self, rdd, rss, rtt, rxx):
         """Double-precision float multiply (multi-instruction sequence).
 
-        Hexagon has no single dfmpy instruction. Double-float multiply is
-        decomposed into partial products:
-          Rdd  = dfmpyll(Rss, Rtt)      // low * low
-          Rdd += dfmpylh(Rss, Rtt)      // accumulate low * high
-          Rdd += dfmpylh(Rtt, Rss)      // accumulate high * low
-          Rdd += dfmpyhh(Rss, Rtt)      // accumulate high * high
+        Hexagon has no single dfmpy instruction; this is the sequence
+        clang -O2 emits for V67 (dfmpyfix scales a denormal operand so
+        the partial products are IEEE-correct):
+          Rxx   = dfmpyfix(Rss, Rtt)
+          tmp   = dfmpyfix(Rtt, Rss)
+          Rdd   = dfmpyll(Rxx, tmp)
+          Rdd  += dfmpylh(Rxx, tmp)
+          Rdd  += dfmpylh(tmp, Rxx)
+          Rdd  += dfmpyhh(Rxx, tmp)
 
-        For full IEEE compliance with denormalized inputs, dfmpyfix should
-        be applied first, but we skip that for now (matches -ffast-math).
+        *rxx* is an extra register pair from the allocator (it must not
+        alias rdd; rdd aliasing rss/rtt is fine because both sources are
+        consumed by the two dfmpyfix before Rdd is written).  The second
+        fixed operand lives in the scratch pair (R15:14).
         """
-        self.DFMPYLL(rdd, rss, rtt)
-        self.DFMPYLH_ACC(rdd, rss, rtt)
-        self.DFMPYLH_ACC(rdd, rtt, rss)
-        self.DFMPYHH_ACC(rdd, rss, rtt)
+        from rpython.jit.backend.hexagon import registers as r
+        tmp = r.d14.value
+        assert rss != tmp and rtt != tmp and rxx != tmp
+        assert rdd != rxx and rdd != tmp and rxx != rss and rxx != rtt
+        self.DFMPYFIX(rxx, rss, rtt)
+        self.DFMPYFIX(tmp, rtt, rss)
+        self.DFMPYLL(rdd, rxx, tmp)
+        self.DFMPYLH_ACC(rdd, rxx, tmp)
+        self.DFMPYLH_ACC(rdd, tmp, rxx)
+        self.DFMPYHH_ACC(rdd, rxx, tmp)
 
     def LI(self, rd, imm):
         """Load immediate (pseudo): load a 32-bit integer into Rd.
@@ -96,48 +141,39 @@ class AbstractHexagonBuilder(HVXInstructionMixin):
     # Immediate loading
     # -----------------------------------------------------------------------
 
+    def TFRIL(self, rd, u16):
+        """Rd.l = #u16 (set low half, preserve high half).
+        Encoding: 0b01110001 imm[15:14] 1 rrrrr PP imm[13:0]
+        """
+        assert 0 <= u16 <= 0xFFFF
+        self.write32((0b01110001 << 24) | (((u16 >> 14) & 0x3) << 22) |
+                     (1 << 21) | ((rd & 0x1F) << 16) | (0b11 << 14) |
+                     (u16 & 0x3FFF))
+
+    def TFRIH(self, rd, u16):
+        """Rd.h = #u16 (set high half, preserve low half).
+        Encoding: 0b01110010 imm[15:14] 1 rrrrr PP imm[13:0]
+        """
+        assert 0 <= u16 <= 0xFFFF
+        self.write32((0b01110010 << 24) | (((u16 >> 14) & 0x3) << 22) |
+                     (1 << 21) | ((rd & 0x1F) << 16) | (0b11 << 14) |
+                     (u16 & 0x3FFF))
+
     def gen_load_int(self, rd, imm):
         """Load a 32-bit integer constant into register rd.
 
-        Strategy:
         - If imm fits in s16 [-32768, 32767]: single TFRSI
-        - Otherwise: TFRSI low half, then set high half via shift+or sequence
+        - Otherwise: Rd.l = #lo16; Rd.h = #hi16
 
-        Uses a scratch register for the high half.  If rd happens to be
-        scratch1, we use scratch2 instead to avoid clobbering rd.
+        Never touches any other register, so it is safe to load several
+        constants into different registers (including both scratches)
+        back to back.
         """
         if SINT16_IMM_MIN <= imm <= SINT16_IMM_MAX:
             self.TFRSI(rd, imm)
         else:
-            lo = imm & 0xFFFF
-            hi = (imm >> 16) & 0xFFFF
-            # Pick a scratch register that differs from rd
-            if rd == r.scratch1.value:
-                scratch = r.scratch2.value
-            else:
-                scratch = r.scratch1.value
-            # Load sign-extended low 16 bits
-            if lo >= 0x8000:
-                self.TFRSI(rd, intmask(lo | (~0xFFFF)))
-            else:
-                self.TFRSI(rd, lo)
-            if hi == 0:
-                if lo >= 0x8000:
-                    # lo was sign-extended, giving wrong high bits.
-                    # Zero-extend to keep only the low 16 bits.
-                    self.ZXTH(rd, rd)
-            elif lo >= 0x8000:
-                # rd has sign-extended lo (wrong high bits).
-                # scratch = hi << 16; rd = zxth(rd) | scratch
-                self.TFRSI(scratch, intmask(hi | (~0xFFFF)) if hi >= 0x8000 else hi)
-                self.S2_ASL_I_R(scratch, scratch, 16)
-                self.ZXTH(rd, rd)
-                self.OR(rd, rd, scratch)
-            else:
-                # lo is positive, rd has correct low half with zeros in high
-                self.TFRSI(scratch, intmask(hi | (~0xFFFF)) if hi >= 0x8000 else hi)
-                self.S2_ASL_I_R(scratch, scratch, 16)
-                self.OR(rd, rd, scratch)
+            self.TFRIL(rd, imm & 0xFFFF)
+            self.TFRIH(rd, (imm >> 16) & 0xFFFF)
 
     def gen_load_int_pair(self, rdd_even, imm64):
         """Load a 64-bit integer constant into a register pair.
@@ -290,26 +326,14 @@ class InstrBuilder(AbstractHexagonBuilder):
 
     def write32(self, value):
         """Append a 32-bit word to the instruction buffer."""
-        from rpython.rlib.debug import debug_print
-        idx = len(self._buf)
-        masked = value & 0xFFFFFFFF
-        self._buf.append(masked)
+        self._buf.append(value & 0xFFFFFFFF)
         self._pos += INST_SIZE
-        if 16 <= idx <= 27:
-            debug_print("HEXDBG write32 idx=", idx, " val=", masked,
-                        " raw=", value)
 
     def overwrite32(self, pos, value):
         """Overwrite a 32-bit word at a specific position in the buffer."""
-        from rpython.rlib.debug import debug_print
         idx = pos // INST_SIZE
         assert 0 <= idx < len(self._buf)
-        old = self._buf[idx]
-        masked = value & 0xFFFFFFFF
-        self._buf[idx] = masked
-        if 16 <= idx <= 27:
-            debug_print("HEXDBG overwrite32 idx=", idx, " old=", old,
-                        " new=", masked, " raw=", value)
+        self._buf[idx] = value & 0xFFFFFFFF
 
     def get_relative_pos(self, break_basic_block=True):
         """Return the current position in the code buffer (byte offset)."""
@@ -333,6 +357,7 @@ class InstrBuilder(AbstractHexagonBuilder):
             p = rffi.cast(rffi.UINTP, addr)
             for i in range(len(self._buf)):
                 p[i] = rffi.cast(rffi.UINT, self._buf[i])
+            flush_icache(addr, len(self._buf) * INST_SIZE)
         finally:
             leave_assembler_writing()
 

@@ -33,6 +33,9 @@ from rpython.rtyper.annlowlevel import cast_instance_to_gcref
 
 class AssemblerHexagon(ResOpAssembler, VectorAssemblerMixin):
 
+    # set to False to bisect problems against the prologue stack check
+    DEBUG_STACK_CHECK = False
+
     def __init__(self, cpu, translate_support_code=False):
         ResOpAssembler.__init__(self, cpu, translate_support_code)
         self.mc = None
@@ -134,6 +137,80 @@ class AssemblerHexagon(ResOpAssembler, VectorAssemblerMixin):
         self.datablockwrapper = MachineDataBlockWrapper(
             self.cpu.asmmemmgr, allblocks)
 
+    def fixup_target_tokens(self, rawstart):
+        for targettoken in self.target_tokens_currently_compiling:
+            targettoken._ll_loop_code += rawstart
+        self.target_tokens_currently_compiling = None
+
+    def _float_frame_pos0(self):
+        """First jitframe word position of the float-pair save area.
+
+        Must match _push_all_regs_to_jitframe_mc: the pairs live right
+        after the GPR slots, rounded up to DOUBLE_WORD alignment (STD
+        needs 8-aligned addresses), i.e. word 16 or 17.
+        """
+        base_ofs = self.cpu.get_baseofs_of_frame_field()
+        float_base = base_ofs + len(self.cpu.gen_regs) * WORD
+        float_base = (float_base + (DOUBLE_WORD - 1)) & ~(DOUBLE_WORD - 1)
+        return (float_base - base_ofs) // WORD
+
+    def store_info_on_descr(self, startspos, guardtok):
+        """Hexagon override of the llsupport version.
+
+        The generic code computes float positions as
+        len(gen_regs) + loc.value * 2, assuming float locations are
+        numbered 0,1,2...; our pair locations carry the raw even
+        register number (16, 18, ...), and the save area may need one
+        word of alignment padding, so compute the position from the
+        actual layout used by _push_all_regs_to_jitframe_mc.
+        (rebuild_faillocs_from_descr's (pos - GPR_REGS) // 2 decodes
+        both the padded and unpadded variants correctly.)
+        """
+        from rpython.jit.metainterp.history import FLOAT, VECTOR
+        withfloats = False
+        for box in guardtok.failargs:
+            if box is not None and \
+               (box.type == FLOAT or box.type == VECTOR):
+                withfloats = True
+                break
+        exc = guardtok.must_save_exception()
+        target = self.failure_recovery_code[exc + 2 * withfloats]
+        faildescrindex = guardtok.faildescrindex
+        base_ofs = self.cpu.get_baseofs_of_frame_field()
+        fpos0 = self._float_frame_pos0()
+        if len(self._previous_rd_locs) == len(guardtok.fail_locs):
+            positions = self._previous_rd_locs     # tentatively
+            shared = True
+        else:
+            positions = [rffi.cast(rffi.USHORT, 0)] * len(guardtok.fail_locs)
+            shared = False
+        for i, loc in enumerate(guardtok.fail_locs):
+            if loc is None:
+                position = 0xFFFF
+            elif loc.is_stack():
+                assert (loc.value & (WORD - 1)) == 0, \
+                    "store_info_on_descr: misaligned"
+                position = (loc.value - base_ofs) // WORD
+                assert 0 < position < 0xFFFF, "store_info_on_descr: overflow!"
+            else:
+                assert loc is not self.cpu.frame_reg  # for now
+                if loc.is_float() or loc.is_reg_pair():
+                    fi = (loc.value - r.d16.value) // 2
+                    assert 0 <= fi < len(self.cpu.float_regs)
+                    position = fpos0 + fi * 2
+                else:
+                    position = self.cpu.all_reg_indexes[loc.value]
+            if shared:
+                if (rffi.cast(lltype.Signed, self._previous_rd_locs[i]) ==
+                        rffi.cast(lltype.Signed, position)):
+                    continue   # still equal
+                positions = positions[:]
+                shared = False
+            positions[i] = rffi.cast(rffi.USHORT, position)
+        self._previous_rd_locs = positions
+        guardtok.faildescr.rd_locs = positions
+        return faildescrindex, target
+
     def teardown(self):
         self.current_clt = None
         self._regalloc = None
@@ -183,7 +260,10 @@ class AssemblerHexagon(ResOpAssembler, VectorAssemblerMixin):
 
         # Function prologue
         function_pos = self.mc.get_relative_pos()
-        self._call_header()
+        if self.DEBUG_STACK_CHECK:
+            self._call_header_with_stack_check()
+        else:
+            self._call_header()
 
         # Emit the loop body
         loop_head = self.mc.get_relative_pos()
@@ -207,6 +287,9 @@ class AssemblerHexagon(ResOpAssembler, VectorAssemblerMixin):
         # Finalize and copy code to executable memory
         rawstart = self._materialize_loop(looptoken, allgcrefs)
         looptoken._ll_function_addr = rawstart + function_pos
+        # Labels recorded buffer-relative positions in _ll_loop_code;
+        # convert them to absolute so later bridges can jump to them.
+        self.fixup_target_tokens(rawstart)
 
         # Update frame depth
         baseofs = self.cpu.get_baseofs_of_frame_field()
@@ -284,6 +367,8 @@ class AssemblerHexagon(ResOpAssembler, VectorAssemblerMixin):
 
         # Finalize and copy code to executable memory
         rawstart = self._materialize_loop(original_loop_token, allgcrefs)
+        # Bridges can contain labels too (e.g. when they close a loop)
+        self.fixup_target_tokens(rawstart)
 
         # Patch the original guard to jump to this bridge.
         # Use rawstart + startpos to skip the GC ref table at the
@@ -419,6 +504,49 @@ class AssemblerHexagon(ResOpAssembler, VectorAssemblerMixin):
         # Save LR
         self.mc.STW(r.sp.value, r.lr.value, offset)
 
+        # Push the jitframe on the shadow stack: helper stubs
+        # (_reload_frame_if_necessary, frame realloc) rely on finding
+        # the current jitframe at [root_stack_top - WORD], and the GC
+        # needs it there to trace/move the frame.
+        gcrootmap = self.cpu.gc_ll_descr.gcrootmap
+        if gcrootmap and gcrootmap.is_shadow_stack:
+            rst = gcrootmap.get_root_stack_top_addr()
+            self.mc.gen_load_int(r.scratch1.value, rst)
+            self.mc.LDW(r.scratch2.value, r.scratch1.value, 0)
+            self.mc.STW(r.scratch2.value, r.fp.value, 0)
+            self.mc.ADDI(r.scratch2.value, r.scratch2.value, WORD)
+            self.mc.STW(r.scratch1.value, r.scratch2.value, 0)
+
+    def _call_header_with_stack_check(self):
+        """Prologue plus a C-stack overflow check.
+
+        If the stack usage (stack_end - SP) exceeds the allowed length,
+        call stack_check_slowpath, which raises StackOverflow (routed to
+        propagate_exception_path by the stub) if the precise check fails.
+        Runs after _call_header: LR/callee-saved regs are already saved
+        and only the scratch registers are clobbered here.
+        """
+        self._call_header()
+        if self.stack_check_slowpath == 0:
+            return              # no stack check (tests / not translated)
+        endaddr, lengthaddr, _ = self.cpu.insert_stack_check()
+        mc = self.mc
+        pd = r.scratch_pred.value
+        mc.gen_load_int(r.scratch1.value, endaddr)
+        mc.LDW(r.scratch1.value, r.scratch1.value, 0)     # stack end
+        mc.SUB(r.scratch1.value, r.scratch1.value, r.sp.value)  # end - SP
+        mc.gen_load_int(r.scratch2.value, lengthaddr)
+        mc.LDW(r.scratch2.value, r.scratch2.value, 0)     # allowed length
+        mc.CMP_GTU(pd, r.scratch1.value, r.scratch2.value)
+        # If within bounds (P0=0), skip the slowpath call
+        jmp_pos = mc.get_relative_pos()
+        mc.TRAP0(0xDE)          # placeholder: if (!P0) jump past
+        mc.gen_load_int(r.scratch1.value, self.stack_check_slowpath)
+        mc.CALLR(r.scratch1.value)
+        offset = mc.get_relative_pos() - jmp_pos
+        pmc = OverwritingBuilder(mc, jmp_pos, INST_SIZE)
+        pmc.J_IF_FALSE(pd, offset)
+
     def gen_func_epilog(self):
         """Emit function epilogue to self.mc."""
         self._gen_func_epilog_mc(self.mc)
@@ -426,10 +554,20 @@ class AssemblerHexagon(ResOpAssembler, VectorAssemblerMixin):
     def _gen_func_epilog_mc(self, mc):
         """Emit function epilogue using the given mc builder.
 
+        - Pop the jitframe from the shadow stack
         - Restore callee-saved registers
         - Restore LR
         - Return (jumpr LR)
         """
+        # Pop the jitframe entry pushed by _call_header
+        gcrootmap = self.cpu.gc_ll_descr.gcrootmap
+        if gcrootmap and gcrootmap.is_shadow_stack:
+            rst = gcrootmap.get_root_stack_top_addr()
+            mc.gen_load_int(r.scratch1.value, rst)
+            mc.LDW(r.scratch2.value, r.scratch1.value, 0)
+            mc.ADDI(r.scratch2.value, r.scratch2.value, -WORD)
+            mc.STW(r.scratch1.value, r.scratch2.value, 0)
+
         # Restore callee-saved registers
         offset = 0
         for reg in r.callee_saved_to_spill:
@@ -521,7 +659,10 @@ class AssemblerHexagon(ResOpAssembler, VectorAssemblerMixin):
     def _push_all_regs_to_jitframe_mc(self, mc, callee_only=False):
         """Save registers to the JITFRAME using a given mc builder."""
         base_ofs = self.cpu.get_baseofs_of_frame_field()
-        regs = r.callee_saved_to_spill if callee_only else r.allocatable_registers
+        # callee_only means: save only the registers that the C callee
+        # is allowed to clobber (the caller-saved allocatable regs).
+        regs = r.caller_saved_allocatable if callee_only \
+            else r.allocatable_registers
         for reg in regs:
             idx = self.cpu.all_reg_indexes[reg.value]
             if idx >= 0:
@@ -535,11 +676,19 @@ class AssemblerHexagon(ResOpAssembler, VectorAssemblerMixin):
                 mc.store_pair_to_jitframe(pair.value,
                                           float_base + i * DOUBLE_WORD)
 
-    def _pop_all_regs_from_jitframe_mc(self, mc, callee_only=False):
-        """Restore registers from the JITFRAME using a given mc builder."""
+    def _pop_all_regs_from_jitframe_mc(self, mc, callee_only=False,
+                                       exclude=None):
+        """Restore registers from the JITFRAME using a given mc builder.
+
+        *exclude* is an optional list of core registers NOT to restore
+        (used by stubs whose return value lives in R0/R1).
+        """
         base_ofs = self.cpu.get_baseofs_of_frame_field()
-        regs = r.callee_saved_to_spill if callee_only else r.allocatable_registers
+        regs = r.caller_saved_allocatable if callee_only \
+            else r.allocatable_registers
         for reg in regs:
+            if exclude is not None and reg in exclude:
+                continue
             idx = self.cpu.all_reg_indexes[reg.value]
             if idx >= 0:
                 mc.load_from_jitframe(reg.value, base_ofs + idx * WORD)
@@ -588,9 +737,13 @@ class AssemblerHexagon(ResOpAssembler, VectorAssemblerMixin):
         ofs = self.cpu.get_ofs_of_frame_field('jf_descr')
         mc.gen_load_int(r.scratch1.value, propagate_descr)
         mc.store_to_jitframe(r.scratch1.value, ofs)
-        # Return jitframe pointer in R0
+        # Return jitframe pointer in R0 and exit the jitted function.
+        # Callers jump (not call) here with SP at its post-prologue
+        # value, so the full epilogue applies: it restores the original
+        # LR from the prologue frame (the live LR is meaningless here)
+        # and pops the shadowstack entry.
         mc.MV(r.r0.value, r.fp.value)
-        mc.JUMPR(r.lr.value)
+        self._gen_func_epilog_mc(mc)
         # Materialize and store
         rawstart = self._materialize_helper(mc)
         self.propagate_exception_path = rawstart
@@ -737,11 +890,12 @@ class AssemblerHexagon(ResOpAssembler, VectorAssemblerMixin):
         # Call the function (address is in scratch1/R14)
         mc.CALLR(r.scratch1.value)
 
+        # Reload frame if GC may have moved it.  This clobbers scratch1,
+        # so it must happen before we park the return value there.
+        self._reload_frame_if_necessary(mc)
+
         # Move return value to scratch1 (R14) for the caller
         mc.MV(r.scratch1.value, r.r0.value)
-
-        # Reload frame if GC may have moved it
-        self._reload_frame_if_necessary(mc)
 
         # Restore registers from JITFRAME
         self._pop_all_regs_from_jitframe_mc(mc, callee_only=callee_only)
@@ -900,7 +1054,9 @@ class AssemblerHexagon(ResOpAssembler, VectorAssemblerMixin):
         jmp_ok = mc.get_relative_pos()
         mc.TRAP0(0xDE)  # placeholder: if (P0) jump to failure
 
-        # Failure path: propagate memory error
+        # Failure path: pop our frame so SP is back at its
+        # post-prologue value, then propagate the memory error
+        mc.ADDI(r.sp.value, r.sp.value, 2 * WORD)
         mc.gen_load_int(r.scratch1.value, self.propagate_exception_path)
         mc.JUMPR(r.scratch1.value)
 
@@ -913,10 +1069,15 @@ class AssemblerHexagon(ResOpAssembler, VectorAssemblerMixin):
         # Reload frame if GC may have moved it
         self._reload_frame_if_necessary(mc)
 
-        # Restore all managed registers from jitframe
-        self._pop_all_regs_from_jitframe_mc(mc, callee_only=False)
+        # Restore all managed registers from jitframe -- except R0,
+        # which holds the allocation result, and R1, which is reloaded
+        # below.  (Neither ever holds a live variable at a malloc op:
+        # the prepare methods force-allocate them as temps.)
+        self._pop_all_regs_from_jitframe_mc(mc, callee_only=False,
+                                            exclude=[r.r0, r.r1])
 
-        # Reload nursery_free_adr into R1 (for 'fixed' kind)
+        # Reload nursery_free_adr into R1 (for 'fixed' kind; the caller
+        # stores it back into nursery_free)
         if kind == 'fixed':
             nursery_free_adr = gc_ll_descr.get_nursery_free_addr()
             mc.gen_load_int(r.r1.value, nursery_free_adr)
@@ -999,8 +1160,8 @@ class AssemblerHexagon(ResOpAssembler, VectorAssemblerMixin):
         return rawstart
 
     # Maximum number of instructions gen_load_int can emit.
-    # Worst case: TFRSI rd + TFRSI scratch + ASL + ZXTH + OR = 5
-    _GC_LOAD_INT_MAX = 5
+    # Worst case: TFRIL + TFRIH = 2
+    _GC_LOAD_INT_MAX = 2
 
     def _patch_gc_table_loads(self):
         """Patch GC table load placeholders with actual absolute addresses.
@@ -1204,18 +1365,22 @@ class AssemblerHexagon(ResOpAssembler, VectorAssemblerMixin):
     # -------------------------------------------------------------------
 
     def push_gcmap(self, mc, gcmap, store=True):
-        """Store a GC map pointer into the jitframe's jf_gcmap field."""
+        """Store a GC map pointer into the jitframe's jf_gcmap field.
+
+        Uses scratch2: the CallBuilder calls this while the function
+        address is parked in scratch1.
+        """
         assert store
         ofs = self.cpu.get_ofs_of_frame_field('jf_gcmap')
         ptr = rffi.cast(lltype.Signed, gcmap)
-        mc.gen_load_int(r.scratch1.value, ptr)
-        mc.store_to_jitframe(r.scratch1.value, ofs)
+        mc.gen_load_int(r.scratch2.value, ptr)
+        mc.store_to_jitframe(r.scratch2.value, ofs)
 
     def pop_gcmap(self, mc):
         """Clear the jitframe's jf_gcmap field (write 0)."""
         ofs = self.cpu.get_ofs_of_frame_field('jf_gcmap')
-        mc.gen_load_int(r.scratch1.value, 0)
-        mc.store_to_jitframe(r.scratch1.value, ofs)
+        mc.gen_load_int(r.scratch2.value, 0)
+        mc.store_to_jitframe(r.scratch2.value, ofs)
 
     def _store_and_reset_exception(self, mc, excvalloc, exctploc):
         """Save current exception and clear it."""
@@ -1260,6 +1425,8 @@ class AssemblerHexagon(ResOpAssembler, VectorAssemblerMixin):
         """Move a value between locations for register allocation."""
         if prev_loc.is_imm():
             self._mov_imm_to_loc(prev_loc, loc)
+        elif prev_loc.is_imm_float():
+            self._mov_imm_float_to_loc(prev_loc, loc)
         elif prev_loc.is_core_reg():
             self._mov_reg_to_loc(prev_loc, loc)
         elif prev_loc.is_stack():
@@ -1268,6 +1435,19 @@ class AssemblerHexagon(ResOpAssembler, VectorAssemblerMixin):
             self._mov_pair_to_loc(prev_loc, loc)
         else:
             raise AssertionError("regalloc_mov: unknown prev_loc type")
+
+    def _mov_imm_float_to_loc(self, prev_loc, loc):
+        # prev_loc.addr points to the 8-byte constant in the data section
+        self.mc.gen_load_int(r.scratch1.value, prev_loc.addr)
+        if loc.is_reg_pair():
+            self.mc.load_double(loc.value, r.scratch1.value, 0)
+        elif loc.is_stack():
+            # Load into the scratch pair (R15:14; the base register R14
+            # may be overwritten by its own load) and spill.
+            self.mc.load_double(r.d14.value, r.scratch1.value, 0)
+            self.mc.store_pair_to_jitframe(r.d14.value, loc.value)
+        else:
+            raise AssertionError("_mov_imm_float_to_loc: unsupported dest")
 
     def _mov_imm_to_loc(self, imm_loc, loc):
         if loc.is_core_reg():
@@ -1290,9 +1470,18 @@ class AssemblerHexagon(ResOpAssembler, VectorAssemblerMixin):
     def _mov_stack_to_loc(self, stack_loc, loc):
         if loc.is_core_reg():
             self.mc.load_from_jitframe(loc.value, stack_loc.value)
+        elif loc.is_reg_pair():
+            self.mc.load_pair_from_jitframe(loc.value, stack_loc.value)
         elif loc.is_stack():
-            self.mc.load_from_jitframe(r.scratch1.value, stack_loc.value)
-            self.mc.store_to_jitframe(r.scratch1.value, loc.value)
+            if stack_loc.is_float():
+                # 8-byte value: move via the scratch pair (R15:14)
+                self.mc.load_pair_from_jitframe(r.d14.value,
+                                                stack_loc.value)
+                self.mc.store_pair_to_jitframe(r.d14.value, loc.value)
+            else:
+                self.mc.load_from_jitframe(r.scratch1.value,
+                                           stack_loc.value)
+                self.mc.store_to_jitframe(r.scratch1.value, loc.value)
         else:
             raise AssertionError("_mov_stack_to_loc: unsupported dest")
 

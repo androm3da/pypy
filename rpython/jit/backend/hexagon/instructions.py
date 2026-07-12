@@ -291,9 +291,9 @@ xtype_ppp_instructions = [
 # ---------------------------------------------------------------------------
 xtype_pair_from_single_instructions = [
     # Rdd = convert_sf2df(Rs)
-    ('CONV_SF2DF', 0b10000100010,  0b000000000),
+    ('CONV_SF2DF', 0b10000100100,  0b000000000),
     # Rdd = convert_w2df(Rs)
-    ('CONV_W2DF',  0b10000100011,  0b000000010),
+    ('CONV_W2DF',  0b10000100100,  0b000000010),
 ]
 
 # ---------------------------------------------------------------------------
@@ -303,9 +303,10 @@ xtype_pair_from_single_instructions = [
 # ---------------------------------------------------------------------------
 xtype_single_from_pair_instructions = [
     # Rd = convert_df2sf(Rss)
-    ('CONV_DF2SF', 0b10000000111,  0b000000001),
-    # Rd = convert_df2w(Rss)
-    ('CONV_DF2W',  0b10000100100,  0b000000001),
+    ('CONV_DF2SF', 0b10001000000,  0b000000001),
+    # Rd = convert_df2w(Rss):chop -- truncation, matching RPython's
+    # cast_float_to_int (C cast) semantics
+    ('CONV_DF2W',  0b10001000111,  0b000000001),
 ]
 
 # ---------------------------------------------------------------------------
@@ -345,6 +346,8 @@ xtype_acc_ppp_instructions = [
 xtype_mpy_rr_to_pair_instructions = [
     # Rdd = mpy(Rs, Rt)  (M2_dpmpyss_s0 -- signed 32x32 to 64)
     ('M2_DPMPYSS_S0',  0b11100101000,  0b000),
+    # Rdd = mpyu(Rs, Rt)  (M2_dpmpyuu_s0 -- unsigned 32x32 to 64)
+    ('M2_DPMPYUU_S0',  0b11100101010,  0b000),
 ]
 
 # ---------------------------------------------------------------------------
